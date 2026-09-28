@@ -1,0 +1,44 @@
+{
+  "name": "tezcode-agents",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "pnpm@10.30.1",
+  "engines": {
+    "node": ">=20.9"
+  },
+  "scripts": {
+    "build": "nest build",
+    "start": "nest start",
+    "dev": "nest start --watch",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src --ext .ts",
+    "demo": "tsx src/demo/run-demo.ts",
+    "db:generate": "prisma generate",
+    "db:migrate": "prisma migrate dev",
+    "db:studio": "prisma studio",
+    "docker:up": "docker compose up -d",
+    "docker:down": "docker compose down"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.126.0",
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "@nestjs/common": "^11.0.0",
+    "@nestjs/config": "^4.0.0",
+    "@nestjs/core": "^11.0.0",
+    "@nestjs/platform-express": "^11.0.0",
+    "@prisma/client": "^6.19.0",
+    "grammy": "^1.46.0",
+    "playwright-core": "^1.63.0",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.1",
+    "yaml": "^2.9.1",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@nestjs/cli": "^11.0.0",
+    "@types/node": "^22.10.0",
+    "prisma": "^6.19.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  }
+}

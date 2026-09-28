@@ -1,0 +1,14 @@
+node_modules/
+dist/
+.env
+*.log
+.DS_Store
+
+# Chrome profili — LinkedIn sessiya cookie'lari shu yerda. Hech qachon git'ga tushmasin.
+.chrome-linkedin/
+
+# Client-specific knowledge belongs in its own private storage, not this repo.
+/knowledge/seo/clinicago.md
+/knowledge/seo/maxsavdo.md
+/knowledge/seo/raos.md
+/knowledge/seo/tezdetal.md

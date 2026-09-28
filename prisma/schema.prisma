@@ -1,0 +1,499 @@
+// Tezcode AI Agents — engine va kuzatuv (observability) sxemasi.
+// 1-qadam: faqat graph engine va xarajat. Lead/Approval/Lesson keyingi qadamlarda.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum RunStatus {
+  RUNNING // tugunlar ketma-ket bajarilmoqda
+  WAITING // interrupt — odam javobini kutyapti
+  DONE
+  FAILED
+  ABORTED // chegaraga urildi (qadam yoki xarajat)
+}
+
+/// Bitta graph ishga tushishi. `state` — tugunlar orasida yuradigan umumiy holat.
+model Run {
+  id          String    @id @default(cuid())
+  tenantId    String    @default("sardor")
+  graph       String // "sales" | "research" | ...
+  status      RunStatus @default(RUNNING)
+  currentNode String?
+  state       Json
+  /// WAITING holatida: odamga berilgan savol va konteksti
+  interrupt   Json?
+  steps       Int       @default(0)
+  tokensIn    Int       @default(0)
+  tokensOut   Int       @default(0)
+  costUsd     Decimal   @default(0) @db.Decimal(12, 6)
+  error       String?
+  /// Telegram bog'lanishi: "<bot>:<chat_id>" — javob qayerga qaytishini biladi
+  threadKey   String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  checkpoints Checkpoint[]
+  stepLogs    Step[]
+  toolCalls   ToolCall[]
+  llmCalls    LlmCall[]
+
+  @@index([tenantId, graph, status])
+  @@index([threadKey, status])
+}
+
+/// Har tugundan KEYIN yoziladi — jarayon yiqilsa shu yerdan tiklanadi.
+model Checkpoint {
+  id        String   @id @default(cuid())
+  runId     String
+  run       Run      @relation(fields: [runId], references: [id], onDelete: Cascade)
+  seq       Int
+  node      String
+  state     Json
+  createdAt DateTime @default(now())
+
+  @@unique([runId, seq])
+}
+
+/// Kuzatuv: har tugun qancha turdi, qancha token yedi.
+model Step {
+  id         String   @id @default(cuid())
+  runId      String
+  run        Run      @relation(fields: [runId], references: [id], onDelete: Cascade)
+  seq        Int
+  node       String
+  status     String // ok | interrupt | error
+  durationMs Int
+  tokensIn   Int      @default(0)
+  tokensOut  Int      @default(0)
+  costUsd    Decimal  @default(0) @db.Decimal(12, 6)
+  error      String?
+  createdAt  DateTime @default(now())
+
+  @@unique([runId, seq])
+}
+
+/// Tool chaqiruvlari. `idempotencyKey` — qayta ishga tushganda ikki marta bajarilmasin.
+model ToolCall {
+  id             String   @id @default(cuid())
+  runId          String?
+  run            Run?     @relation(fields: [runId], references: [id], onDelete: SetNull)
+  node           String?
+  tool           String
+  input          Json
+  output         Json?
+  error          String?
+  durationMs     Int?
+  idempotencyKey String?  @unique
+  createdAt      DateTime @default(now())
+
+  @@index([runId, tool])
+}
+
+/// Har LLM chaqiruvi — xarajat tahlili shu jadvaldan chiqadi.
+model LlmCall {
+  id            String   @id @default(cuid())
+  runId         String?
+  run           Run?     @relation(fields: [runId], references: [id], onDelete: SetNull)
+  node          String?
+  model         String
+  effort        String?
+  purpose       String? // "diagnose" | "intent" | ...
+  tokensIn      Int      @default(0)
+  tokensOut     Int      @default(0)
+  cacheReadIn   Int      @default(0)
+  cacheWriteIn  Int      @default(0)
+  costUsd       Decimal  @default(0) @db.Decimal(12, 6)
+  durationMs    Int?
+  stopReason    String?
+  error         String?
+  createdAt     DateTime @default(now())
+
+  @@index([runId])
+  @@index([model, createdAt])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Klassik ML qatlami.
+// Qoida: belgilar QAROR PAYTIDA suratga olinadi. Keyin o'qitganda "kelajakdan"
+// olingan ma'lumot aralashmaydi (leakage bo'lmaydi).
+// Subyekt polimorf: lead, draft, reply — har agent o'zinikini yozadi.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Qaror paytidagi belgilar.
+model FeatureSnapshot {
+  id          String   @id @default(cuid())
+  tenantId    String   @default("sardor")
+  subjectType String // "lead" | "draft" | "reply"
+  subjectId   String
+  featureSet  String // "lead_score" | "reply_intent" | ...
+  /// features.ts versiyasi — belgilar o'zgarsa eski qatorlar aralashmasin
+  version     Int
+  values      Json
+  runId       String?
+  createdAt   DateTime @default(now())
+
+  @@index([subjectType, subjectId])
+  @@index([featureSet, version, createdAt])
+}
+
+/// Yorliq (label) — o'qitishning javob ustuni. Sardorning har qarori shu yerga tushadi.
+model Outcome {
+  id          String   @id @default(cuid())
+  tenantId    String   @default("sardor")
+  projectId   String?
+  subjectType String
+  subjectId   String
+  /// "approved" | "edited" | "rejected" | "replied" | "no_reply" | "meeting" | "won" | "lost"
+  label       String
+  /// regressiya kerak bo'lganda (masalan javob kelguncha o'tgan soat)
+  value       Float?
+  source      String   @default("sardor") // "sardor" | "system"
+  note        String?
+  createdAt   DateTime @default(now())
+
+  @@index([subjectType, subjectId])
+  @@index([label, createdAt])
+}
+
+/// O'qitilgan model. Daraxt kichik — artefakt JSON sifatida shu yerda yashaydi.
+model MlModel {
+  id             String   @id @default(cuid())
+  name           String // "lead_score"
+  version        Int
+  algo           String // "decision_tree" | "random_forest" | "logistic"
+  featureSet     String
+  featureVersion Int
+  params         Json
+  /// accuracy, precision, recall, f1, nTrain, nTest — o'qitishda o'lchanadi
+  metrics        Json
+  artifact       Json
+  active         Boolean  @default(false)
+  trainedAt      DateTime @default(now())
+
+  predictions Prediction[]
+
+  @@unique([name, version])
+  @@index([name, active])
+}
+
+/// Har bashorat yoziladi — SOYA rejimda ham. Keyin natija bilan solishtiriladi.
+model Prediction {
+  id          String   @id @default(cuid())
+  modelId     String
+  model       MlModel  @relation(fields: [modelId], references: [id], onDelete: Cascade)
+  subjectType String
+  subjectId   String
+  runId       String?
+  score       Float
+  decision    String?
+  /// true — model qaror qilmaydi, faqat kuzatiladi
+  shadow      Boolean  @default(true)
+  /// keyinchalik Outcome kelganda to'ldiriladi — model to'g'ri aytdimi
+  actual      String?
+  createdAt   DateTime @default(now())
+
+  @@index([subjectType, subjectId])
+  @@index([modelId, createdAt])
+}
+
+/// Suhbat tarixi — har bot/chat uchun alohida. Chat rejimi shundan kontekst oladi.
+model ChatTurn {
+  id        String   @id @default(cuid())
+  agent     String
+  chatId    String
+  role      String // "user" | "assistant"
+  text      String
+  createdAt DateTime @default(now())
+
+  @@index([agent, chatId, createdAt])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Biznes ma'lumoti — UCHALA agent uchun BITTA baza.
+// Ajratish baza darajasida emas, `projectId` qatori bo'yicha: Sales Bomond
+// loyihasida ishlaganda faqat Bomond qatorlarini ko'radi, lekin Content ham
+// o'sha bilimdan foydalana oladi (aks holda uchta silos bo'lib qoladi).
+// ─────────────────────────────────────────────────────────────────────────────
+
+model Project {
+  id        String   @id @default(cuid())
+  tenantId  String   @default("sardor")
+  slug      String   @unique
+  name      String
+  note      String?
+  status    String   @default("active") // active | paused | done
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  leads    Lead[]
+  insights Insight[]
+}
+
+model Lead {
+  id        String   @id @default(cuid())
+  projectId String
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  company   String
+  person    String?
+  role      String?
+  /// linkedin | instagram | maps | vacancy | telegram | manual
+  source    String   @default("manual")
+  sourceUrl String?
+  site      String?
+  /// new → researched → diagnosed → drafted → approved → sent → replied → meeting → won|lost|dead
+  status    String   @default("new")
+  note      String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  facts  Fact[]
+  pains  Pain[]
+  drafts Draft[]
+
+  @@unique([projectId, company])
+  @@index([projectId, status])
+}
+
+/// Dossier qatori. Manbasiz fakt qabul qilinmaydi — `sourceUrl` majburiy.
+model Fact {
+  id        String   @id @default(cuid())
+  leadId    String
+  lead      Lead     @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  /// site | vacancy | instagram | maps | telegram | news | other
+  kind      String
+  text      String
+  sourceUrl String
+  quote     String?
+  agent     String
+  createdAt DateTime @default(now())
+
+  @@index([leadId, kind])
+}
+
+/// Og'riq gipotezasi. Dalilsiz saqlanmaydi.
+model Pain {
+  id         String   @id @default(cuid())
+  leadId     String
+  lead       Lead     @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  claim      String
+  /// past | orta | yuqori
+  confidence String   @default("orta")
+  /// [{ sourceUrl, quote }]
+  evidence   Json
+  agent      String
+  createdAt  DateTime @default(now())
+
+  @@index([leadId])
+}
+
+model Draft {
+  id        String   @id @default(cuid())
+  leadId    String
+  lead      Lead     @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  /// linkedin | telegram | email | instagram
+  channel   String   @default("linkedin")
+  text      String
+  /// pending | approved | edited | rejected | sent
+  status    String   @default("pending")
+  agent     String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([leadId, status])
+}
+
+/// Umumiy bilim: nima ishlagani. Sales yozadi — Content o'qiydi, va aksincha.
+model Insight {
+  id        String   @id @default(cuid())
+  projectId String?
+  project   Project? @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  /// pain | hook | channel | format
+  kind      String
+  text      String
+  evidence  String?
+  /// natijalardan hisoblangan ball (0..1)
+  score     Float?
+  agent     String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([kind, score])
+  @@index([projectId, kind])
+}
+
+// ─────────────────────────── SEO / GEO / AEO ───────────────────────────
+
+model SeoSite {
+  id        String   @id @default(cuid())
+  tenantId  String   @default("sardor")
+  domain    String   @unique
+  name      String
+  note      String?
+  createdAt DateTime @default(now())
+
+  queries SeoQuery[]
+  audits  SeoAudit[]
+  tasks   SeoTask[]
+  pages   SeoPage[]
+}
+
+/// Kuzatiladigan qidiruv so'rovi (target prompt).
+/// Crawl natijasi — saytning bitta sahifasi. Har crawl'da yangilanadi.
+model SeoPage {
+  id     String  @id @default(cuid())
+  siteId String
+  site   SeoSite @relation(fields: [siteId], references: [id], onDelete: Cascade)
+  url    String
+  status Int
+  title       String?
+  description String?
+  h1          String?
+  /// H2 sarlavhalar, "\n" bilan
+  h2          String?
+  /// aniqlangan til: uz | ru | en
+  lang        String?
+  words       Int     @default(0)
+  noindex     Boolean @default(false)
+  /// so'rov chiqarish uchun matn boshi (8000 belgigacha)
+  text        String?
+  /// sitemap | havola
+  source      String  @default("havola")
+
+  firstSeen DateTime @default(now())
+  lastSeen  DateTime @updatedAt
+
+  @@unique([siteId, url])
+  @@index([siteId])
+}
+
+model SeoQuery {
+  id        String   @id @default(cuid())
+  siteId    String
+  site      SeoSite  @relation(fields: [siteId], references: [id], onDelete: Cascade)
+  query     String
+  /// uz | ru | en
+  locale    String   @default("uz")
+  /// asosiy | jonli | farqlovchi | nisha | tolov | taqqoslash | brend
+  category  String?
+  /// 1 (eng muhim) .. 5
+  priority  Int      @default(3)
+  createdAt DateTime @default(now())
+
+  ranks RankCheck[]
+
+  @@unique([siteId, query, locale])
+  @@index([siteId, priority])
+}
+
+/// Pozitsiya o'lchovi. Tarix shu yerda — "qayerdan qayerga" savoliga javob.
+model RankCheck {
+  id        String   @id @default(cuid())
+  queryId   String
+  query     SeoQuery @relation(fields: [queryId], references: [id], onDelete: Cascade)
+  /// google | ai
+  engine    String   @default("google")
+  /// topilmasa null
+  position  Int?
+  url       String?
+  /// o'sha paytdagi top natijalar (raqobatchi tahlili uchun)
+  top       Json?
+  checkedAt DateTime @default(now())
+
+  @@index([queryId, checkedAt])
+}
+
+/// Texnik audit natijasi — skript o'lchaydi, model emas.
+model SeoAudit {
+  id        String   @id @default(cuid())
+  siteId    String
+  site      SeoSite  @relation(fields: [siteId], references: [id], onDelete: Cascade)
+  url       String
+  /// { robots, sitemap, meta, hreflang, canonical, jsonLd, llmsTxt, headings, aeo }
+  result    Json
+  /// 0..100 — o'tgan tekshiruvlar ulushi
+  score     Int
+  createdAt DateTime @default(now())
+
+  @@index([siteId, createdAt])
+}
+
+// ───────────────── o'z-o'zini rivojlantirish va to'siqlar ─────────────────
+// Namuna: Hermes'ning saboqlar.md fayli. U ishlaydi, chunki agent har ish
+// boshida o'qiydi va xato takrorlanmaydi. Shu mexanizm jadvalga ko'chirildi.
+
+/// O'rganilgan saboq. Xato takrorlanmasligi uchun.
+model Lesson {
+  id      String @id @default(cuid())
+  /// kim o'rgandi
+  agent   String
+  /// qayerda qo'llanadi: seo | content | sales | research | umumiy
+  scope   String
+  /// qachon qo'llanadi (qanday vaziyatda eslash kerak)
+  trigger String
+  /// qoidaning o'zi — aniq va bajariladigan
+  rule    String
+  /// nega shu qoida paydo bo'ldi: xato, Sardor tanbehi, o'lchov
+  evidence String?
+  /// sardor | ozi — kim aniqladi
+  source  String  @default("sardor")
+  active  Boolean @default(true)
+  /// necha marta ishlatildi — foydasizlari ko'rinib qoladi
+  hits    Int     @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([scope, active])
+}
+
+/// Agent o'zi bajara olmagan ish. Insondan nima kerakligi aniq yoziladi.
+model Blocker {
+  id     String @id @default(cuid())
+  agent  String
+  /// nima qilmoqchi edi
+  what   String
+  /// nega qila olmadi
+  why    String
+  /// insondan aynan nima kerak
+  need   String
+  /// open | resolved | wontfix
+  status String @default("open")
+  answer String?
+
+  createdAt  DateTime  @default(now())
+  resolvedAt DateTime?
+
+  @@index([status, agent])
+}
+
+/// SEO vazifasi — tavsiya emas, kuzatiladigan ish.
+model SeoTask {
+  id      String  @id @default(cuid())
+  siteId  String
+  site    SeoSite @relation(fields: [siteId], references: [id], onDelete: Cascade)
+  title   String
+  /// aniq nima qilish kerak — bajaruvchi o'qib tushunadigan darajada
+  detail  String
+  /// qaysi sahifa yoki fayl
+  target  String?
+  /// 1 (kichik) .. 5 (katta) — kutilayotgan foyda
+  impact  Int     @default(3)
+  /// 1 (oson) .. 5 (og'ir) — sarflanadigan kuch
+  effort  Int     @default(3)
+  /// open | doing | done | dropped
+  status  String  @default("open")
+  /// kim bajaradi
+  owner   String?
+  note    String?
+
+  createdAt DateTime  @default(now())
+  doneAt    DateTime?
+
+  @@index([siteId, status])
+}
