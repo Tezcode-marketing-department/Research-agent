@@ -109,10 +109,14 @@ export class ClaudeCliLlm implements LlmFactory {
     return { llm, usage: () => ({ ...total }) };
   }
 
+  /**
+   * Prompt komanda-qatori argumenti emas, STDIN orqali uzatiladi — Windows'da
+   * spawn argumentlari ~32K belgi bilan chegaralangan (`ENAMETOOLONG`),
+   * manba matnlari bilan promptlar buni osongina oshib ketadi.
+   */
   private run(prompt: string, model?: string): Promise<CliResult> {
     const args = [
       '-p',
-      prompt,
       '--output-format',
       'json',
       '--strict-mcp-config',
@@ -131,6 +135,10 @@ export class ClaudeCliLlm implements LlmFactory {
         child.kill('SIGKILL');
         reject(new Error('claude CLI vaqt chegarasidan oshdi'));
       }, DEFAULT_TIMEOUT_MS);
+
+      child.stdin.on('error', () => {}); // jarayon erta chiqsa EPIPE — close handlerda ko'rinadi
+      child.stdin.write(prompt);
+      child.stdin.end();
 
       child.stdout.on('data', (chunk) => (stdout += String(chunk)));
       child.stderr.on('data', (chunk) => (stderr += String(chunk)));

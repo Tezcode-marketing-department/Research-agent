@@ -16,7 +16,7 @@ async function main(): Promise<void> {
   await prisma.$connect();
 
   const runner = new GraphRunner(new PrismaCheckpointer(prisma), new StubLlm());
-  const conversation = new ConversationService(prisma, runner, new AgentRegistry());
+  const conversation = new ConversationService(prisma, runner, new AgentRegistry(prisma));
   const chatId = 999_000_111; // sinov chati
 
   const say = async (text: string): Promise<void> => {

@@ -1,8 +1,11 @@
 import { Injectable } from '@nestjs/common';
+import { PrismaService } from '../db/prisma.service';
 import { CompiledGraph } from '../engine/graph';
 import { GraphRunner, RunOutcome } from '../engine/runner';
 import { PlaceholderState, placeholderGraph } from './placeholder.graph';
-import { researchGraph, researchInitialState, ResearchState } from './research.graph';
+import { createPrismaResearchLeadStore } from './research.leads';
+import { createResearchGraph, researchInitialState, ResearchState } from './research.graph';
+import { lookupResearchSources } from './research.web';
 
 /** Har agent — bitta bot va o'z ish graph'i. */
 export type AgentKey = 'sales' | 'research' | 'content' | 'boss';
@@ -48,40 +51,46 @@ const placeholderState = (agent: string) => (input: string): PlaceholderState =>
 
 @Injectable()
 export class AgentRegistry {
-  private readonly agents = new Map<AgentKey, AgentDef>([
-    ['sales', defineAgent({
-      key: 'sales',
-      title: 'Sales Agent',
-      tokenEnv: 'TG_BOT_TOKEN_SALES',
-      greeting: 'Sales Agent.\n\nOddiy yozing — gaplashamiz.\n/vazifa <matn> — tasdiq talab qiladigan ish boshlaydi\n/holat · /bekor · /tozala',
-      graph: placeholderGraph,
-      initialState: placeholderState('Sales'),
-    })],
-    ['research', defineAgent<ResearchState>({
-      key: 'research',
-      title: 'Research Agent',
-      tokenEnv: 'TG_BOT_TOKEN_RESEARCH',
-      greeting: 'Research Agent.\n\nSavol yoki mavzuni yozing — ochiq manbalarni izlab, havolali xulosa tayyorlayman.\n/vazifa <savol> — dalilli izlanish\n/holat · /bekor · /tozala',
-      graph: researchGraph,
-      initialState: researchInitialState,
-    })],
-    ['content', defineAgent({
-      key: 'content',
-      title: 'Content Agent',
-      tokenEnv: 'TG_BOT_TOKEN_CONTENT',
-      greeting: 'Content Agent.\n\nOddiy yozing — gaplashamiz.\n/vazifa <matn> — tasdiq talab qiladigan ish\n/holat · /bekor · /tozala',
-      graph: placeholderGraph,
-      initialState: placeholderState('Content'),
-    })],
-    ['boss', defineAgent({
-      key: 'boss',
-      title: 'Dispetcher',
-      tokenEnv: 'TG_BOT_TOKEN_BOSS',
-      greeting: 'Dispetcher.\n\nVazifani qaysi agentga berishni men taqsimlayman.\n/holat · /tozala',
-      graph: placeholderGraph,
-      initialState: placeholderState('Dispetcher'),
-    })],
-  ]);
+  private readonly agents: Map<AgentKey, AgentDef>;
+
+  constructor(prisma: PrismaService) {
+    const researchLeadStore = createPrismaResearchLeadStore(prisma);
+
+    this.agents = new Map<AgentKey, AgentDef>([
+      ['sales', defineAgent({
+        key: 'sales',
+        title: 'Sales Agent',
+        tokenEnv: 'TG_BOT_TOKEN_SALES',
+        greeting: 'Sales Agent.\n\nOddiy yozing — gaplashamiz.\n/vazifa <matn> — tasdiq talab qiladigan ish boshlaydi\n/holat · /bekor · /tozala',
+        graph: placeholderGraph,
+        initialState: placeholderState('Sales'),
+      })],
+      ['research', defineAgent<ResearchState>({
+        key: 'research',
+        title: 'Research Agent',
+        tokenEnv: 'TG_BOT_TOKEN_RESEARCH',
+        greeting: 'Research Agent.\n\nOv mavzusini yozing (masalan: "IT/AI kerak bo\'lgan restoranlar Toshkentda") — nomzodlarni dalil bilan topib, Sales navbatiga qo\'yaman.\n/vazifa <mavzu> — dalilli ov\n/holat · /bekor · /tozala',
+        graph: createResearchGraph(lookupResearchSources, researchLeadStore),
+        initialState: researchInitialState,
+      })],
+      ['content', defineAgent({
+        key: 'content',
+        title: 'Content Agent',
+        tokenEnv: 'TG_BOT_TOKEN_CONTENT',
+        greeting: 'Content Agent.\n\nOddiy yozing — gaplashamiz.\n/vazifa <matn> — tasdiq talab qiladigan ish\n/holat · /bekor · /tozala',
+        graph: placeholderGraph,
+        initialState: placeholderState('Content'),
+      })],
+      ['boss', defineAgent({
+        key: 'boss',
+        title: 'Dispetcher',
+        tokenEnv: 'TG_BOT_TOKEN_BOSS',
+        greeting: 'Dispetcher.\n\nVazifani qaysi agentga berishni men taqsimlayman.\n/holat · /tozala',
+        graph: placeholderGraph,
+        initialState: placeholderState('Dispetcher'),
+      })],
+    ]);
+  }
 
   all(): AgentDef[] {
     return [...this.agents.values()];

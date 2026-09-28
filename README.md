@@ -4,7 +4,7 @@ Sardorning ichki agent platformasi. Agentlar: **Sales**, **Research**, **Content
 ularni birlashtiruvchi **Orchestrator**. Har agentga alohida Telegram bot, lekin
 bitta jarayon.
 
-Holat: graph engine, kuzatuv, xarajat hisobi va Telegram botlar bor. Research Agent v1 web qidiruvi, manba o'qish va havolali xulosani bajara oladi. Sales va Content uchun ish graph'lari hali vaqtinchalik.
+Holat: graph engine, kuzatuv, xarajat hisobi va Telegram botlar bor. Research Agent ochiq manbalardan mijoz nomzodlarini ovlaydi, Postgres'ga (Lead/Fact/Pain) yozadi va Sales navbatiga qo'yadi. Sales va Content uchun ish graph'lari hali vaqtinchalik.
 
 ## Ishga tushirish
 
@@ -30,11 +30,13 @@ pnpm docker:up
 pnpm db:migrate
 ```
 
-## Research Agent v1
+## Research Agent — mijoz ovlash
 
-Research botida `/vazifa <savol>` yuborilganda u DuckDuckGo'dan dastlabki natijalarni qidiradi, oltitagacha ochiq sahifani o'qiydi va LLM orqali manbali topilmalarni o'zbek lotin yozuvida tuzadi. Har bir topilma manba identifikatoriga ulanadi; yaroqsiz manba raqami bo'lgan topilma javobdan chiqariladi. Agent oddiy chat rejimida web qidiruvi qilgan deb ko'rsatmaydi.
+Research botida `/vazifa <ov mavzusi>` yuborilganda (masalan: "IT/AI kerak bo'lgan restoranlar Toshkentda") agent DuckDuckGo'dan dastlabki natijalarni qidiradi, o'n ikkitagacha ochiq sahifani o'qiydi va LLM orqali konkret biznes nomzodlarini ajratadi. Har nomzod uchun manba bilan tasdiqlangan bitta fakt va bitta og'riq gipotezasi bo'lishi shart — manbasiz nomzod yoki dalilsiz og'riq saqlanmaydi.
 
-Sahifa yuklashda `http(s)` manzillariga ruxsat beriladi; localhost, xususiy IP va ichki redirect manzillari rad etiladi. Web sahifa matni ishonchsiz ma'lumot sifatida LLM'ga uzatiladi.
+Har nomzod Postgres'ga yoziladi: `tezcode-outbound` loyihasi ostida Lead upsert qilinadi (kompaniya nomi bo'yicha — takror ov qilinsa yangilanadi, xato bermaydi), Fact va Pain qatorlari qo'shiladi, so'ng Lead holati `researched`ga o'tkaziladi va qisqa izoh yoziladi. Bu — Sales agentga uzatish: Sales hozircha `Lead` jadvalidan `status="researched"` bo'yicha so'raydi (Sales'ning o'z graph mantig'i hali yo'q).
+
+Sahifa yuklashda `http(s)` manzillariga ruxsat beriladi; localhost, xususiy IP va ichki redirect manzillari rad etiladi. Web sahifa matni ishonchsiz ma'lumot sifatida LLM'ga uzatiladi. Bitta nomzodni saqlashda xato bo'lsa, faqat o'sha nomzod o'tkazib yuboriladi — butun ov to'xtamaydi.
 
 `pnpm test:research` manba filtri, sahifa matni ajratish va manba raqamini tekshirishni sinaydi.
 

@@ -11,7 +11,7 @@ interface SearchResult {
   url: string;
 }
 
-const MAX_RESULTS = 6;
+const MAX_RESULTS = 12;
 const MAX_PAGE_CHARS = 8_000;
 const MAX_REDIRECTS = 4;
 
@@ -189,14 +189,25 @@ export async function lookupResearchSources(query: string): Promise<ResearchSour
 
   const searchUrl = new URL('https://html.duckduckgo.com/html/');
   searchUrl.searchParams.set('q', cleanQuery);
-  let searchResponse: Response;
-  try {
-    searchResponse = await fetch(searchUrl, {
-      headers: { 'user-agent': 'Mozilla/5.0 (compatible; TezcodeResearch/1.0; +https://tezcode.dev)', accept: 'text/html' },
-      signal: AbortSignal.timeout(15_000),
-    });
-  } catch (error) {
-    throw new Error(`Web qidiruvi ishlamadi: ${error instanceof Error ? error.message : String(error)}`);
+  let searchResponse: Response | undefined;
+  let lastError: unknown;
+  // Tarmoq uzilishi tez-tez vaqtinchalik bo'ladi — bir marta qayta urinish
+  // butun ovni bekor qilishning oldini oladi.
+  for (let attempt = 1; attempt <= 2 && !searchResponse; attempt += 1) {
+    try {
+      searchResponse = await fetch(searchUrl, {
+        headers: { 'user-agent': 'Mozilla/5.0 (compatible; TezcodeResearch/1.0; +https://tezcode.dev)', accept: 'text/html' },
+        signal: AbortSignal.timeout(15_000),
+      });
+    } catch (error) {
+      lastError = error;
+      if (attempt < 2) await new Promise((resolve) => setTimeout(resolve, 1_000));
+    }
+  }
+  if (!searchResponse) {
+    const cause = lastError instanceof Error && lastError.cause ? ` (${String((lastError.cause as { code?: string; message?: string }).code ?? lastError.cause)})` : '';
+    const message = lastError instanceof Error ? lastError.message : String(lastError);
+    throw new Error(`Web qidiruvi ishlamadi: ${message}${cause}`);
   }
   if (!searchResponse.ok) throw new Error(`Web qidiruvi HTTP ${searchResponse.status} qaytardi.`);
   const searchHtml = await readLimitedText(searchResponse, 2_000_000);

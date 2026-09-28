@@ -10,7 +10,7 @@ async function main(): Promise<void> {
   const prisma = new PrismaService();
   await prisma.$connect();
   const llm = new HermesLlm(loadHermesConfig(), new PrismaLlmRecorder(prisma));
-  const chat = new ChatService(prisma, new AgentRegistry(), llm);
+  const chat = new ChatService(prisma, new AgentRegistry(prisma), llm);
   const chatId = 999000222;
 
   for (const text of ['salom', 'sen nima bo\'yicha ishlaydigan agentsan?']) {
