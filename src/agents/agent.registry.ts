@@ -1,20 +1,42 @@
 import { Injectable } from '@nestjs/common';
 import { CompiledGraph } from '../engine/graph';
-import { placeholderGraph, PlaceholderState } from './placeholder.graph';
+import { GraphRunner, RunOutcome } from '../engine/runner';
+import { PlaceholderState, placeholderGraph } from './placeholder.graph';
+import { researchGraph, researchInitialState, ResearchState } from './research.graph';
 
-/** Har agent — bitta bot, bitta graph. */
+/** Har agent — bitta bot va o'z ish graph'i. */
 export type AgentKey = 'sales' | 'research' | 'content' | 'boss';
 
 export interface AgentDef {
   key: AgentKey;
   title: string;
-  /** .env dagi token o'zgaruvchisi. */
   tokenEnv: string;
   greeting: string;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  graph: CompiledGraph<any>;
-  /** Kelgan matndan boshlang'ich holat. */
-  initialState(input: string): object;
+  graphName: string;
+  start(runner: GraphRunner, input: string, threadKey: string): Promise<RunOutcome<object>>;
+  resume(runner: GraphRunner, runId: string, answer: string): Promise<RunOutcome<object>>;
+}
+
+interface AgentOptions<S extends object> {
+  key: AgentKey;
+  title: string;
+  tokenEnv: string;
+  greeting: string;
+  graph: CompiledGraph<S>;
+  initialState(input: string): S;
+}
+
+function defineAgent<S extends object>(options: AgentOptions<S>): AgentDef {
+  return {
+    key: options.key,
+    title: options.title,
+    tokenEnv: options.tokenEnv,
+    greeting: options.greeting,
+    graphName: options.graph.name,
+    start: (runner, input, threadKey) =>
+      runner.start(options.graph, options.initialState(input), { threadKey }),
+    resume: (runner, runId, answer) => runner.resume(options.graph, runId, answer),
+  };
 }
 
 const placeholderState = (agent: string) => (input: string): PlaceholderState => ({
@@ -27,54 +49,38 @@ const placeholderState = (agent: string) => (input: string): PlaceholderState =>
 @Injectable()
 export class AgentRegistry {
   private readonly agents = new Map<AgentKey, AgentDef>([
-    [
-      'sales',
-      {
-        key: 'sales',
-        title: 'Sales Agent',
-        tokenEnv: 'TG_BOT_TOKEN_SALES',
-        greeting:
-          'Sales Agent.\n\nOddiy yozing — gaplashamiz.\n/vazifa <matn> — tasdiq talab qiladigan ish boshlaydi\n/holat · /bekor · /tozala',
-        graph: placeholderGraph,
-        initialState: placeholderState('Sales'),
-      },
-    ],
-    [
-      'research',
-      {
-        key: 'research',
-        title: 'Research Agent',
-        tokenEnv: 'TG_BOT_TOKEN_RESEARCH',
-        greeting:
-          'Research Agent.\n\nOddiy yozing — gaplashamiz.\n/vazifa <matn> — tasdiq talab qiladigan ish\n/holat · /bekor · /tozala',
-        graph: placeholderGraph,
-        initialState: placeholderState('Research'),
-      },
-    ],
-    [
-      'content',
-      {
-        key: 'content',
-        title: 'Content Agent',
-        tokenEnv: 'TG_BOT_TOKEN_CONTENT',
-        greeting:
-          'Content Agent.\n\nOddiy yozing — gaplashamiz.\n/vazifa <matn> — tasdiq talab qiladigan ish\n/holat · /bekor · /tozala',
-        graph: placeholderGraph,
-        initialState: placeholderState('Content'),
-      },
-    ],
-    [
-      'boss',
-      {
-        key: 'boss',
-        title: 'Dispetcher',
-        tokenEnv: 'TG_BOT_TOKEN_BOSS',
-        greeting:
-          'Dispetcher.\n\nVazifani qaysi agentga berishni men taqsimlayman.\n/holat · /tozala',
-        graph: placeholderGraph,
-        initialState: placeholderState('Dispetcher'),
-      },
-    ],
+    ['sales', defineAgent({
+      key: 'sales',
+      title: 'Sales Agent',
+      tokenEnv: 'TG_BOT_TOKEN_SALES',
+      greeting: 'Sales Agent.\n\nOddiy yozing — gaplashamiz.\n/vazifa <matn> — tasdiq talab qiladigan ish boshlaydi\n/holat · /bekor · /tozala',
+      graph: placeholderGraph,
+      initialState: placeholderState('Sales'),
+    })],
+    ['research', defineAgent<ResearchState>({
+      key: 'research',
+      title: 'Research Agent',
+      tokenEnv: 'TG_BOT_TOKEN_RESEARCH',
+      greeting: 'Research Agent.\n\nSavol yoki mavzuni yozing — ochiq manbalarni izlab, havolali xulosa tayyorlayman.\n/vazifa <savol> — dalilli izlanish\n/holat · /bekor · /tozala',
+      graph: researchGraph,
+      initialState: researchInitialState,
+    })],
+    ['content', defineAgent({
+      key: 'content',
+      title: 'Content Agent',
+      tokenEnv: 'TG_BOT_TOKEN_CONTENT',
+      greeting: 'Content Agent.\n\nOddiy yozing — gaplashamiz.\n/vazifa <matn> — tasdiq talab qiladigan ish\n/holat · /bekor · /tozala',
+      graph: placeholderGraph,
+      initialState: placeholderState('Content'),
+    })],
+    ['boss', defineAgent({
+      key: 'boss',
+      title: 'Dispetcher',
+      tokenEnv: 'TG_BOT_TOKEN_BOSS',
+      greeting: 'Dispetcher.\n\nVazifani qaysi agentga berishni men taqsimlayman.\n/holat · /tozala',
+      graph: placeholderGraph,
+      initialState: placeholderState('Dispetcher'),
+    })],
   ]);
 
   all(): AgentDef[] {
@@ -87,12 +93,9 @@ export class AgentRegistry {
     return def;
   }
 
-  /** Run yozuvidagi graph nomi bo'yicha topish (resume uchun). */
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  graphByName(name: string): CompiledGraph<any> {
-    for (const def of this.agents.values()) {
-      if (def.graph.name === name) return def.graph;
-    }
-    throw new Error(`graph topilmadi: ${name}`);
+  graphByName(name: string): AgentDef {
+    const def = [...this.agents.values()].find((agent) => agent.graphName === name);
+    if (!def) throw new Error(`graph topilmadi: ${name}`);
+    return def;
   }
 }

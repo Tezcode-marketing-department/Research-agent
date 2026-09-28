@@ -4,7 +4,7 @@ Sardorning ichki agent platformasi. Agentlar: **Sales**, **Research**, **Content
 ularni birlashtiruvchi **Orchestrator**. Har agentga alohida Telegram bot, lekin
 bitta jarayon.
 
-Holat: **1–2-qadam tugadi** — graph engine, kuzatuv, xarajat hisobi va Telegram botlar.
+Holat: graph engine, kuzatuv, xarajat hisobi va Telegram botlar bor. Research Agent v1 web qidiruvi, manba o'qish va havolali xulosani bajara oladi. Sales va Content uchun ish graph'lari hali vaqtinchalik.
 
 ## Ishga tushirish
 
@@ -29,6 +29,14 @@ cp .env.example .env
 pnpm docker:up
 pnpm db:migrate
 ```
+
+## Research Agent v1
+
+Research botida `/vazifa <savol>` yuborilganda u DuckDuckGo'dan dastlabki natijalarni qidiradi, oltitagacha ochiq sahifani o'qiydi va LLM orqali manbali topilmalarni o'zbek lotin yozuvida tuzadi. Har bir topilma manba identifikatoriga ulanadi; yaroqsiz manba raqami bo'lgan topilma javobdan chiqariladi. Agent oddiy chat rejimida web qidiruvi qilgan deb ko'rsatmaydi.
+
+Sahifa yuklashda `http(s)` manzillariga ruxsat beriladi; localhost, xususiy IP va ichki redirect manzillari rad etiladi. Web sahifa matni ishonchsiz ma'lumot sifatida LLM'ga uzatiladi.
+
+`pnpm test:research` manba filtri, sahifa matni ajratish va manba raqamini tekshirishni sinaydi.
 
 ## Arxitektura
 
@@ -90,7 +98,6 @@ Har javobingiz `Outcome` jadvaliga yorliq bo'lib tushadi (`approved` /
 
 ## Keyingi qadamlar
 
-3. Research Agent — dalilli dossier
-4. Sales: diagnoz + draft + guardrails
-5. `hunt` (Chrome) + Orchestrator
-6. Content Agent — Hermes v3 pipeline ustiga
+3. Sales: diagnoz + draft + guardrails
+4. `hunt` (Chrome) + Orchestrator
+5. Content Agent — Hermes v3 pipeline ustiga

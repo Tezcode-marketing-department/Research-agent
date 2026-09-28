@@ -47,8 +47,8 @@ export class ConversationService {
 
     if (waiting) {
       // Javob kutilayotgan run bor — matn o'sha runga tegishli.
-      const graph = this.registry.graphByName(waiting.graph);
-      const outcome = await this.runner.resume(graph, waiting.id, text);
+      const agentDef = this.registry.graphByName(waiting.graph);
+      const outcome = await agentDef.resume(this.runner, waiting.id, text);
       await this.recordApprovalLabel(waiting.id, text);
       return this.format(outcome);
     }
@@ -64,9 +64,7 @@ export class ConversationService {
     text: string,
   ): Promise<ReplyPayload> {
     const def = this.registry.get(agent);
-    const outcome = await this.runner.start(def.graph, def.initialState(text), {
-      threadKey: this.threadKey(agent, chatId),
-    });
+    const outcome = await def.start(this.runner, text, this.threadKey(agent, chatId));
     return this.format(outcome);
   }
 
@@ -132,6 +130,9 @@ export class ConversationService {
       case 'WAITING':
         return { text: outcome.interrupt?.question ?? 'Javob kutilmoqda.', waiting: true };
       case 'DONE':
+        if ('report' in outcome.state && typeof outcome.state.report === 'string') {
+          return { text: outcome.state.report, waiting: false };
+        }
         return { text: 'Tayyor.', waiting: false };
       case 'ABORTED':
         return { text: `To'xtatildi: ${outcome.error}`, waiting: false };

@@ -13,6 +13,7 @@
     "typecheck": "tsc --noEmit",
     "lint": "eslint src --ext .ts",
     "demo": "tsx src/demo/run-demo.ts",
+    "test:research": "tsx --test src/agents/research.graph.test.ts",
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate dev",
     "db:studio": "prisma studio",
