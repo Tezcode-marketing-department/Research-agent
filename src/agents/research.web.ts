@@ -15,6 +15,37 @@ const MAX_RESULTS = 12;
 const MAX_PAGE_CHARS = 8_000;
 const MAX_REDIRECTS = 4;
 
+/** Har vazifada qidiriladigan frilanser/ish topshiriq platformalari. */
+export const TARGET_SITES = [
+  'uzithub.uz',
+  'dowork.uz',
+  'giglancer.uz',
+  'worklance.uz',
+  'freelancer.mehnat.uz',
+  'kwork.ru',
+  'freelance.habr.com',
+] as const;
+
+const MAX_SITE_RESULTS = 3;
+/** LLM promptiga uzatiladigan manbalar chegarasi — xarajat va vaqtni nazorat qilish uchun. */
+const MAX_TOTAL_SOURCES = 24;
+/** DuckDuckGo'ga ketma-ket so'rov yuborishda uni bloklatib qo'ymaslik uchun tanaffus (+jitter). */
+const SITE_QUERY_DELAY_MS = 1_500;
+const SITE_QUERY_JITTER_MS = 700;
+
+/**
+ * DuckDuckGo bot faolligini sezganda HTTP 202 bilan "anomaliya" sahifasini
+ * qaytaradi — bu status muvaffaqiyatli hisoblanadi (`response.ok === true`),
+ * shuning uchun oddiy HTTP-status tekshiruvi buni ushlamaydi va natija
+ * "hech narsa topilmadi" deb noto'g'ri talqin qilinardi. Belgi 2026-09-29da
+ * jonli tekshiruvda aniqlandi.
+ */
+function isBlockedHtml(html: string): boolean {
+  return /anomaly|unusual traffic|captcha/i.test(html);
+}
+
+class DuckDuckGoBlockedError extends Error {}
+
 function isPublicHost(hostname: string): boolean {
   const host = hostname.toLowerCase().replace(/^\[|\]$/g, '');
   if (
@@ -91,7 +122,7 @@ function pageText(html: string): { title: string; content: string } {
   return { title, content: content.slice(0, MAX_PAGE_CHARS) };
 }
 
-function searchResults(html: string, baseUrl: string): SearchResult[] {
+function searchResults(html: string, baseUrl: string, maxResults: number = MAX_RESULTS): SearchResult[] {
   const seen = new Set<string>();
   const results: SearchResult[] = [];
   const anchors = /<a\b([^>]*\bclass=["'][^"']*\bresult__a\b[^"']*["'][^>]*)>([\s\S]*?)<\/a>/gi;
@@ -113,9 +144,24 @@ function searchResults(html: string, baseUrl: string): SearchResult[] {
     seen.add(url.toString());
     const title = decodeHtml(match[2].replace(/<[^>]+>/g, ' ')).replace(/\s+/g, ' ').trim();
     if (title) results.push({ title, url: url.toString() });
-    if (results.length >= MAX_RESULTS) break;
+    if (results.length >= maxResults) break;
   }
   return results;
+}
+
+/** Bir necha qidiruvdan kelgan natijalarni URL bo'yicha takrorsiz birlashtiradi, umumiy chegaraga qadar. */
+function mergeUnique(lists: SearchResult[][], maxTotal: number = Infinity): SearchResult[] {
+  const seen = new Set<string>();
+  const merged: SearchResult[] = [];
+  for (const list of lists) {
+    for (const item of list) {
+      if (merged.length >= maxTotal) return merged;
+      if (seen.has(item.url)) continue;
+      seen.add(item.url);
+      merged.push(item);
+    }
+  }
+  return merged;
 }
 
 async function fetchPublicPage(rawUrl: string): Promise<{ url: string; title: string; content: string } | null> {
@@ -182,13 +228,9 @@ async function readLimitedText(response: Response, maxBytes: number): Promise<st
   return chunks.join('');
 }
 
-/** Web'dan manba topadi, sahifalarni oladi va faqat tekshiriladigan matnni qaytaradi. */
-export async function lookupResearchSources(query: string): Promise<ResearchSource[]> {
-  const cleanQuery = query.trim();
-  if (cleanQuery.length < 3) throw new Error('Izlanish savoli kamida 3 ta belgidan iborat bo‘lsin.');
-
+async function runDuckDuckGoSearch(query: string, maxResults: number): Promise<SearchResult[]> {
   const searchUrl = new URL('https://html.duckduckgo.com/html/');
-  searchUrl.searchParams.set('q', cleanQuery);
+  searchUrl.searchParams.set('q', query);
   let searchResponse: Response | undefined;
   let lastError: unknown;
   // Tarmoq uzilishi tez-tez vaqtinchalik bo'ladi — bir marta qayta urinish
@@ -211,7 +253,77 @@ export async function lookupResearchSources(query: string): Promise<ResearchSour
   }
   if (!searchResponse.ok) throw new Error(`Web qidiruvi HTTP ${searchResponse.status} qaytardi.`);
   const searchHtml = await readLimitedText(searchResponse, 2_000_000);
-  const results = searchResults(searchHtml, searchUrl.toString());
+  if (isBlockedHtml(searchHtml)) {
+    throw new DuckDuckGoBlockedError('DuckDuckGo so\'rovni vaqtincha cheklamoqda (anomaliya himoyasi) — birozdan keyin qayta urinib ko\'ring.');
+  }
+  return searchResults(searchHtml, searchUrl.toString(), maxResults);
+}
+
+/** Bitta manbaning (umumiy qidiruv yoki bitta `TARGET_SITES` domeni) qidiruv natijasi — operatorga "chindan qidirdimi" isboti sifatida ko'rsatiladi. */
+export interface SiteSearchStat {
+  /** Domen nomi, yoki umumiy DuckDuckGo qidiruvi uchun 'umumiy'. */
+  site: string;
+  resultCount: number;
+  /** DuckDuckGo aynan shu so'rovda anomaliya sahifasini qaytardi. */
+  blocked: boolean;
+  /** Oldingi so'rov bloklangani uchun bu sayt umuman so'ralmadi. */
+  skipped: boolean;
+}
+
+export interface SearchLookupResult {
+  results: SearchResult[];
+  stats: SiteSearchStat[];
+}
+
+/**
+ * Umumiy qidiruvga qo'shimcha ravishda har bir `TARGET_SITES` domenini
+ * `site:` operatori bilan alohida so'raydi — shu saytlardagi frilanser
+ * topshiriqlari/profillar ham nomzod sifatida ko'rib chiqilsin. Bitta sayt
+ * ishlamasa (bloklangan, bo'sh natija) faqat o'sha sayt o'tkazib yuboriladi,
+ * butun ov to'xtamaydi. DuckDuckGo bloklaganini payqasak, qolgan saytlarni
+ * so'ramasdan o'tkazib yuboramiz — IP allaqachon cheklangan bo'lsa, davom
+ * etish faqat bloklanish vaqtini uzaytiradi. Har bir saytning natijasi
+ * `stats`da qayd etiladi — operator qaysi sayt haqiqatan so'ralganini va
+ * necha natija qaytarganini keyin hisobotda ko'ra oladi.
+ */
+async function collectSearchResults(cleanQuery: string): Promise<SearchLookupResult> {
+  const generalResults = await runDuckDuckGoSearch(cleanQuery, MAX_RESULTS);
+  const stats: SiteSearchStat[] = [{ site: 'umumiy', resultCount: generalResults.length, blocked: false, skipped: false }];
+
+  const siteResults: SearchResult[][] = [];
+  let blockedSoFar = false;
+  for (const site of TARGET_SITES) {
+    if (blockedSoFar) {
+      stats.push({ site, resultCount: 0, blocked: false, skipped: true });
+      continue;
+    }
+    try {
+      const found = await runDuckDuckGoSearch(`site:${site} ${cleanQuery}`, MAX_SITE_RESULTS);
+      siteResults.push(found);
+      stats.push({ site, resultCount: found.length, blocked: false, skipped: false });
+    } catch (err) {
+      siteResults.push([]);
+      const blocked = err instanceof DuckDuckGoBlockedError;
+      stats.push({ site, resultCount: 0, blocked, skipped: false });
+      if (blocked) blockedSoFar = true;
+    }
+    await new Promise((resolve) => setTimeout(resolve, SITE_QUERY_DELAY_MS + Math.random() * SITE_QUERY_JITTER_MS));
+  }
+
+  return { results: mergeUnique([generalResults, ...siteResults], MAX_TOTAL_SOURCES), stats };
+}
+
+export interface ResearchLookupResult {
+  sources: ResearchSource[];
+  stats: SiteSearchStat[];
+}
+
+/** Web'dan manba topadi, sahifalarni oladi va faqat tekshiriladigan matnni qaytaradi. */
+export async function lookupResearchSources(query: string): Promise<ResearchLookupResult> {
+  const cleanQuery = query.trim();
+  if (cleanQuery.length < 3) throw new Error('Izlanish savoli kamida 3 ta belgidan iborat bo‘lsin.');
+
+  const { results, stats } = await collectSearchResults(cleanQuery);
   if (!results.length) throw new Error('Web qidiruvidan ochiq natija olinmadi.');
 
   const pages = await Promise.all(results.map(async (result) => ({
@@ -219,13 +331,15 @@ export async function lookupResearchSources(query: string): Promise<ResearchSour
     page: await fetchPublicPage(result.url),
   })));
 
-  return pages
+  const sources = pages
     .filter((item): item is { result: SearchResult; page: NonNullable<typeof item.page> } => item.page !== null)
     .map(({ result, page }) => ({
       title: page.title || result.title,
       url: page.url,
       content: page.content,
     }));
+
+  return { sources, stats };
 }
 
-export const researchInternals = { isPublicHost, safeUrl, pageText, searchResults };
+export const researchInternals = { isPublicHost, safeUrl, pageText, searchResults, mergeUnique, isBlockedHtml };

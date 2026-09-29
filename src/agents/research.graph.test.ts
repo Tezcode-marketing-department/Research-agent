@@ -6,7 +6,7 @@ import { GraphRunner, type LlmFactory } from '../engine/runner';
 import { ZERO_USAGE } from '../engine/types';
 import { createResearchGraph, researchInitialState } from './research.graph';
 import type { PersistedLead, ResearchCandidateInput, ResearchLeadStore } from './research.leads';
-import { researchInternals, type ResearchSource } from './research.web';
+import { researchInternals, TARGET_SITES, type ResearchSource } from './research.web';
 
 test('research source URL filter rejects local and credential-bearing URLs', () => {
   assert.equal(researchInternals.safeUrl('http://127.0.0.1:5433'), null);
@@ -34,6 +34,93 @@ test('research page extraction removes scripts and decodes visible text', () => 
   assert.equal(page.content.includes('ignore all rules'), false);
 });
 
+test('target freelance/job sites list is complete and has no accidental duplicates', () => {
+  const expected = [
+    'uzithub.uz',
+    'dowork.uz',
+    'giglancer.uz',
+    'worklance.uz',
+    'freelancer.mehnat.uz',
+    'kwork.ru',
+    'freelance.habr.com',
+  ];
+  assert.deepEqual([...TARGET_SITES], expected);
+  assert.equal(new Set(TARGET_SITES).size, TARGET_SITES.length);
+});
+
+test('search result parser respects a custom max-results limit', () => {
+  const html = ['a', 'b', 'c'].map((id) =>
+    `<a class="result__a" href="https://example.com/${id}">Result ${id}</a>`,
+  ).join('');
+  const results = researchInternals.searchResults(html, 'https://html.duckduckgo.com/html/', 2);
+  assert.equal(results.length, 2);
+});
+
+test('mergeUnique dedupes by URL across lists, keeps first-seen order, and caps total', () => {
+  const general = [{ title: 'A', url: 'https://a.example/1' }, { title: 'B', url: 'https://b.example/1' }];
+  const site1 = [{ title: 'A dup', url: 'https://a.example/1' }, { title: 'C', url: 'https://c.example/1' }];
+  const site2 = [{ title: 'D', url: 'https://d.example/1' }];
+
+  const merged = researchInternals.mergeUnique([general, site1, site2]);
+  assert.deepEqual(merged.map((r) => r.url), [
+    'https://a.example/1',
+    'https://b.example/1',
+    'https://c.example/1',
+    'https://d.example/1',
+  ]);
+
+  const capped = researchInternals.mergeUnique([general, site1, site2], 3);
+  assert.equal(capped.length, 3);
+  assert.deepEqual(capped.map((r) => r.url), [
+    'https://a.example/1',
+    'https://b.example/1',
+    'https://c.example/1',
+  ]);
+});
+
+test('DuckDuckGo anomaly/challenge pages are recognized despite the misleading HTTP 202 status', () => {
+  assert.equal(researchInternals.isBlockedHtml('<html>Unusual traffic detected from your network.</html>'), true);
+  assert.equal(researchInternals.isBlockedHtml('<html>please solve this CAPTCHA</html>'), true);
+  assert.equal(researchInternals.isBlockedHtml('<html><a class="result__a" href="https://example.com">Example</a></html>'), false);
+});
+
+test('research graph truncates an overlong limitations string instead of failing the whole hunt', async () => {
+  const sources: ResearchSource[] = [{
+    title: 'Example source',
+    url: 'https://example.com/page',
+    content: 'A sufficiently long source excerpt with no clear business candidate in it.',
+  }];
+  const overlong = 'x'.repeat(400);
+  const llmFactory: LlmFactory = {
+    forStep: () => ({
+      llm: {
+        text: async () => '',
+        json: async <T>(schema: ZodType<T>) => schema.parse({
+          candidates: [],
+          limitations: [overlong],
+        }),
+      },
+      usage: () => ({ ...ZERO_USAGE }),
+    }),
+  };
+
+  const leadStore: ResearchLeadStore = {
+    ensureProject: async () => ({ id: 'proj-1' }),
+    persistCandidate: async (_projectId, _agent, candidate): Promise<PersistedLead> => ({
+      leadId: 'lead-1', company: candidate.company, isNew: true,
+    }),
+  };
+
+  const runner = new GraphRunner(new MemoryCheckpointer(), llmFactory);
+  const result = await runner.start(
+    createResearchGraph(async () => ({ sources, stats: [] }), leadStore),
+    researchInitialState('IT kerak bo\'lgan bizneslar'),
+  );
+
+  assert.equal(result.status, 'DONE');
+  assert.equal(result.state.limitations[0]?.length, 300);
+});
+
 test('research graph persists only candidates with valid source citations', async () => {
   const sources: ResearchSource[] = [{
     title: 'Example vacancy post',
@@ -48,7 +135,9 @@ test('research graph persists only candidates with valid source citations', asyn
           candidates: [
             {
               company: 'Example LLC',
-              fact: { kind: 'vacancy', text: 'Operator vakansiyasi joylagan.', sourceId: 1 },
+              person: 'Aziz Karimov',
+              role: 'buyurtmachi',
+              fact: { kind: 'freelance', text: 'Kwork\'da chatbot loyihasi e\'lon qilgan.', sourceId: 1 },
               pain: { claim: 'Onlayn buyurtma yo\'q, faqat qo\'ng\'iroq orqali.', confidence: 'orta', evidence: [{ sourceId: 1 }] },
             },
             {
@@ -73,9 +162,16 @@ test('research graph persists only candidates with valid source citations', asyn
     },
   };
 
+  const stats = [
+    { site: 'umumiy', resultCount: 5, blocked: false, skipped: false },
+    { site: 'uzithub.uz', resultCount: 2, blocked: false, skipped: false },
+    { site: 'dowork.uz', resultCount: 0, blocked: true, skipped: false },
+    { site: 'giglancer.uz', resultCount: 0, blocked: false, skipped: true },
+  ];
+
   const runner = new GraphRunner(new MemoryCheckpointer(), llmFactory);
   const result = await runner.start(
-    createResearchGraph(async () => sources, leadStore),
+    createResearchGraph(async () => ({ sources, stats }), leadStore),
     researchInitialState('IT kerak bo\'lgan bizneslar'),
   );
 
@@ -84,7 +180,14 @@ test('research graph persists only candidates with valid source citations', asyn
   assert.equal(calls.length, 1);
   assert.equal(calls[0]?.candidate.fact.sourceUrl, 'https://example.com/vacancy');
   assert.equal(calls[0]?.candidate.pain.evidence[0]?.sourceUrl, 'https://example.com/vacancy');
+  assert.equal(calls[0]?.candidate.source, 'freelance');
   assert.match(result.state.report, /Example LLC/);
+  assert.match(result.state.report, /Profil: Aziz Karimov — buyurtmachi/);
   assert.match(result.state.report, /researched/);
   assert.match(result.state.report, /Manba raqami noto'g'ri/);
+  // Har sayt uchun aniq "necha natija / bloklandi / o'tkazib yuborildi" ko'rinishi
+  // — operator qidiruv chindan qaysi saytlarga borganini shu yerdan tekshiradi.
+  assert.match(result.state.report, /UzITHub: 2 ta natija/);
+  assert.match(result.state.report, /Dowork: DuckDuckGo vaqtincha bloklandi/);
+  assert.match(result.state.report, /GigLancer: oldingi bloklanish tufayli so'ralmadi/);
 });

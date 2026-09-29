@@ -8,9 +8,9 @@
  */
 import { PrismaService } from '../db/prisma.service';
 
-export type FactKind = 'site' | 'vacancy' | 'instagram' | 'maps' | 'telegram' | 'news' | 'other';
+export type FactKind = 'site' | 'vacancy' | 'freelance' | 'instagram' | 'maps' | 'telegram' | 'news' | 'other';
 export type PainConfidence = 'past' | 'orta' | 'yuqori';
-export type LeadSource = 'linkedin' | 'instagram' | 'maps' | 'vacancy' | 'telegram' | 'manual';
+export type LeadSource = 'linkedin' | 'instagram' | 'maps' | 'vacancy' | 'freelance' | 'telegram' | 'manual';
 
 export interface ResearchCandidateInput {
   company: string;
