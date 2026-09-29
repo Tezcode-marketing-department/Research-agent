@@ -7,7 +7,13 @@ import { LlmOptions, NodeLlm, TokenUsage } from '../engine/types';
 import { LlmRecorder, NoopRecorder } from './anthropic.llm';
 
 const CLAUDE_BIN = join(homedir(), '.local', 'bin', 'claude');
-const DEFAULT_TIMEOUT_MS = 180_000;
+/**
+ * Research hunt promptlari 24 tagacha manba sahifasini o'z ichiga olishi
+ * mumkin (research.web.ts'dagi MAX_TOTAL_SOURCES) — bunday og'ir chaqiruvda
+ * lokal CLI 180s ichida ulgurmasligi kuzatildi (2026-09-29). 300s ko'proq
+ * bo'sh joy beradi, boshqa (kichik) chaqiruvlarga ta'sir qilmaydi.
+ */
+const DEFAULT_TIMEOUT_MS = 300_000;
 
 interface CliResult {
   result?: string;

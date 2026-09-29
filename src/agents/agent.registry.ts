@@ -16,6 +16,8 @@ export interface AgentDef {
   tokenEnv: string;
   greeting: string;
   graphName: string;
+  /** Oddiy matn (buyruqsiz) kelganda va kutayotgan ish bo'lmasa — /vazifa kabi yangi ish boshlansinmi (true), yoki oddiy suhbatga o'tsinmi (false). */
+  autoStartFromText: boolean;
   start(runner: GraphRunner, input: string, threadKey: string): Promise<RunOutcome<object>>;
   resume(runner: GraphRunner, runId: string, answer: string): Promise<RunOutcome<object>>;
 }
@@ -27,6 +29,7 @@ interface AgentOptions<S extends object> {
   greeting: string;
   graph: CompiledGraph<S>;
   initialState(input: string): S;
+  autoStartFromText?: boolean;
 }
 
 function defineAgent<S extends object>(options: AgentOptions<S>): AgentDef {
@@ -36,6 +39,7 @@ function defineAgent<S extends object>(options: AgentOptions<S>): AgentDef {
     tokenEnv: options.tokenEnv,
     greeting: options.greeting,
     graphName: options.graph.name,
+    autoStartFromText: options.autoStartFromText ?? false,
     start: (runner, input, threadKey) =>
       runner.start(options.graph, options.initialState(input), { threadKey }),
     resume: (runner, runId, answer) => runner.resume(options.graph, runId, answer),
@@ -69,9 +73,10 @@ export class AgentRegistry {
         key: 'research',
         title: 'Research Agent',
         tokenEnv: 'TG_BOT_TOKEN_RESEARCH',
-        greeting: 'Research Agent.\n\nOv mavzusini yozing (masalan: "IT/AI kerak bo\'lgan restoranlar Toshkentda") — nomzodlarni dalil bilan topib, Sales navbatiga qo\'yaman.\n/vazifa <mavzu> — dalilli ov\n/holat · /bekor · /tozala',
+        greeting: 'Research Agent.\n\nOv mavzusini yozing (masalan: "IT/AI kerak bo\'lgan restoranlar Toshkentda") — nomzodlarni dalil bilan topib, Sales navbatiga qo\'yaman.\n/vazifa <mavzu> ham ishlaydi, lekin shart emas — oddiy yozsangiz ham boshlayman.\n/holat · /bekor · /tozala',
         graph: createResearchGraph(lookupResearchSources, researchLeadStore),
         initialState: researchInitialState,
+        autoStartFromText: true,
       })],
       ['content', defineAgent({
         key: 'content',

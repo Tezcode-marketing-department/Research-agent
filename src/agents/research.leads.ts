@@ -18,8 +18,11 @@ export interface ResearchCandidateInput {
   role?: string;
   source: LeadSource;
   sourceUrl: string;
+  /** Kompaniyaning o'z sayti yoki Instagram/Telegram manzili — Lead.site ustuniga yoziladi. */
+  contactUrl?: string;
   fact: { kind: FactKind; text: string; sourceUrl: string; quote?: string };
-  pain: { claim: string; confidence: PainConfidence; evidence: { sourceUrl: string; quote?: string }[] };
+  /** Operator aniq ehtiyoj talab qilmagan holatlarda bo'sh bo'lishi mumkin — Sales suhbatda aniqlaydi. */
+  pain?: { claim: string; confidence: PainConfidence; evidence: { sourceUrl: string; quote?: string }[] };
   note: string;
 }
 
@@ -62,6 +65,7 @@ export function createPrismaResearchLeadStore(prisma: PrismaService): ResearchLe
             role: candidate.role,
             source: candidate.source,
             sourceUrl: candidate.sourceUrl,
+            site: candidate.contactUrl,
             status: 'new',
           },
           update: {
@@ -69,6 +73,7 @@ export function createPrismaResearchLeadStore(prisma: PrismaService): ResearchLe
             role: candidate.role,
             source: candidate.source,
             sourceUrl: candidate.sourceUrl,
+            site: candidate.contactUrl,
           },
         });
 
@@ -83,15 +88,17 @@ export function createPrismaResearchLeadStore(prisma: PrismaService): ResearchLe
           },
         });
 
-        await tx.pain.create({
-          data: {
-            leadId: savedLead.id,
-            claim: candidate.pain.claim,
-            confidence: candidate.pain.confidence,
-            evidence: candidate.pain.evidence,
-            agent,
-          },
-        });
+        if (candidate.pain) {
+          await tx.pain.create({
+            data: {
+              leadId: savedLead.id,
+              claim: candidate.pain.claim,
+              confidence: candidate.pain.confidence,
+              evidence: candidate.pain.evidence,
+              agent,
+            },
+          });
+        }
 
         return tx.lead.update({
           where: { id: savedLead.id },

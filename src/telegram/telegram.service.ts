@@ -119,6 +119,13 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
           await ctx.reply(pending.text);
           return;
         }
+        // Kutayotgan ish yo'q. Ba'zi agentlar uchun (masalan Research) oddiy
+        // matn ham /vazifa kabi yangi ish boshlaydi — buyruqni eslab yurish shart emas.
+        if (def.autoStartFromText) {
+          const reply = await this.conversation.startTask(def.key, ctx.chat.id, text);
+          await ctx.reply(reply.text);
+          return;
+        }
         // Yo'q — oddiy suhbat.
         await ctx.reply(await this.chat.reply(def.key, ctx.chat.id, text));
       } catch (err) {

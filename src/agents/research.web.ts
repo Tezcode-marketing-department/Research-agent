@@ -276,29 +276,55 @@ export interface SearchLookupResult {
 }
 
 /**
- * Umumiy qidiruvga qo'shimcha ravishda har bir `TARGET_SITES` domenini
- * `site:` operatori bilan alohida so'raydi — shu saytlardagi frilanser
- * topshiriqlari/profillar ham nomzod sifatida ko'rib chiqilsin. Bitta sayt
- * ishlamasa (bloklangan, bo'sh natija) faqat o'sha sayt o'tkazib yuboriladi,
- * butun ov to'xtamaydi. DuckDuckGo bloklaganini payqasak, qolgan saytlarni
- * so'ramasdan o'tkazib yuboramiz — IP allaqachon cheklangan bo'lsa, davom
- * etish faqat bloklanish vaqtini uzaytiradi. Har bir saytning natijasi
- * `stats`da qayd etiladi — operator qaysi sayt haqiqatan so'ralganini va
- * necha natija qaytarganini keyin hisobotda ko'ra oladi.
+ * Har bir kengaytirilgan so'rov ("queries") uchun umumiy DuckDuckGo qidiruvi
+ * ishga tushiriladi — operatorning tabiiy tildagi so'rovi o'rniga LLM tuzgan
+ * bir necha qidiruv-do'st ibora orqali izlanadi. Faqat BIRINCHI (eng markaziy)
+ * so'rov `TARGET_SITES` domenlarini `site:` operatori bilan alohida so'raydi —
+ * har so'rov uchun to'liq 7 ta saytni qayta so'rash DuckDuckGo yukini
+ * ko'paytirib yuborardi. Bitta so'rov/sayt ishlamasa (bloklangan, bo'sh
+ * natija) faqat o'shasi o'tkazib yuboriladi, butun ov to'xtamaydi.
+ * DuckDuckGo bloklaganini payqasak, qolgan hamma so'rovlarni (umumiy ham,
+ * sayt ham) so'ramasdan o'tkazib yuboramiz — IP allaqachon cheklangan bo'lsa,
+ * davom etish faqat bloklanish vaqtini uzaytiradi. Har bir so'rovning natijasi
+ * `stats`da qayd etiladi — operator qaysi so'rov/sayt haqiqatan so'ralganini
+ * va necha natija qaytarganini keyin hisobotda ko'ra oladi.
  */
-async function collectSearchResults(cleanQuery: string): Promise<SearchLookupResult> {
-  const generalResults = await runDuckDuckGoSearch(cleanQuery, MAX_RESULTS);
-  const stats: SiteSearchStat[] = [{ site: 'umumiy', resultCount: generalResults.length, blocked: false, skipped: false }];
-
-  const siteResults: SearchResult[][] = [];
+async function collectSearchResults(queries: string[]): Promise<SearchLookupResult> {
+  const stats: SiteSearchStat[] = [];
+  const generalResults: SearchResult[][] = [];
   let blockedSoFar = false;
+
+  for (const [index, q] of queries.entries()) {
+    const label = queries.length > 1 ? `Umumiy so'rov ${index + 1}` : 'umumiy';
+    if (blockedSoFar) {
+      stats.push({ site: label, resultCount: 0, blocked: false, skipped: true });
+      continue;
+    }
+    try {
+      const found = await runDuckDuckGoSearch(q, MAX_RESULTS);
+      generalResults.push(found);
+      stats.push({ site: label, resultCount: found.length, blocked: false, skipped: false });
+    } catch (err) {
+      generalResults.push([]);
+      const blocked = err instanceof DuckDuckGoBlockedError;
+      stats.push({ site: label, resultCount: 0, blocked, skipped: false });
+      if (blocked) blockedSoFar = true;
+    }
+    if (index < queries.length - 1) {
+      await new Promise((resolve) => setTimeout(resolve, SITE_QUERY_DELAY_MS + Math.random() * SITE_QUERY_JITTER_MS));
+    }
+  }
+
+  const primaryQuery = queries[0];
+  const siteResults: SearchResult[][] = [];
   for (const site of TARGET_SITES) {
     if (blockedSoFar) {
       stats.push({ site, resultCount: 0, blocked: false, skipped: true });
       continue;
     }
+    await new Promise((resolve) => setTimeout(resolve, SITE_QUERY_DELAY_MS + Math.random() * SITE_QUERY_JITTER_MS));
     try {
-      const found = await runDuckDuckGoSearch(`site:${site} ${cleanQuery}`, MAX_SITE_RESULTS);
+      const found = await runDuckDuckGoSearch(`site:${site} ${primaryQuery}`, MAX_SITE_RESULTS);
       siteResults.push(found);
       stats.push({ site, resultCount: found.length, blocked: false, skipped: false });
     } catch (err) {
@@ -307,10 +333,9 @@ async function collectSearchResults(cleanQuery: string): Promise<SearchLookupRes
       stats.push({ site, resultCount: 0, blocked, skipped: false });
       if (blocked) blockedSoFar = true;
     }
-    await new Promise((resolve) => setTimeout(resolve, SITE_QUERY_DELAY_MS + Math.random() * SITE_QUERY_JITTER_MS));
   }
 
-  return { results: mergeUnique([generalResults, ...siteResults], MAX_TOTAL_SOURCES), stats };
+  return { results: mergeUnique([...generalResults, ...siteResults], MAX_TOTAL_SOURCES), stats };
 }
 
 export interface ResearchLookupResult {
@@ -318,13 +343,26 @@ export interface ResearchLookupResult {
   stats: SiteSearchStat[];
 }
 
-/** Web'dan manba topadi, sahifalarni oladi va faqat tekshiriladigan matnni qaytaradi. */
-export async function lookupResearchSources(query: string): Promise<ResearchLookupResult> {
-  const cleanQuery = query.trim();
-  if (cleanQuery.length < 3) throw new Error('Izlanish savoli kamida 3 ta belgidan iborat bo‘lsin.');
+/**
+ * Barcha so'rovlar (umumiy + saytlar) natija bermaganda ko'tariladi. `stats`ni
+ * o'zi bilan olib yuradi — shu sabab chaqiruvchi (research.graph.ts) buni
+ * bo'sh natija sifatida qabul qilib, baribir qaysi sayt bloklangani/hech
+ * narsa qaytarmaganini hisobotda ko'rsata oladi, "sabab noma'lum" xato
+ * o'rniga.
+ */
+export class NoSearchResultsError extends Error {
+  constructor(public readonly stats: SiteSearchStat[]) {
+    super('Web qidiruvidan ochiq natija olinmadi.');
+  }
+}
 
-  const { results, stats } = await collectSearchResults(cleanQuery);
-  if (!results.length) throw new Error('Web qidiruvidan ochiq natija olinmadi.');
+/** Web'dan manba topadi, sahifalarni oladi va faqat tekshiriladigan matnni qaytaradi. */
+export async function lookupResearchSources(queries: string[]): Promise<ResearchLookupResult> {
+  const cleanQueries = queries.map((q) => q.trim()).filter((q) => q.length >= 3);
+  if (!cleanQueries.length) throw new Error('Izlanish savoli kamida 3 ta belgidan iborat bo‘lsin.');
+
+  const { results, stats } = await collectSearchResults(cleanQueries);
+  if (!results.length) throw new NoSearchResultsError(stats);
 
   const pages = await Promise.all(results.map(async (result) => ({
     result,
@@ -340,6 +378,39 @@ export async function lookupResearchSources(query: string): Promise<ResearchLook
     }));
 
   return { sources, stats };
+}
+
+const CONTACT_LOOKUP_MAX_RESULTS = 3;
+
+/**
+ * Bitta nomzod uchun bog'lanish ma'lumotini alohida qidiradi — to'liq
+ * `TARGET_SITES` fanoutisiz, faqat bitta umumiy so'rov. `lookupResearchSources`
+ * har chaqiruvda 7 ta qo'shimcha sayt so'ramasin, shu sabab alohida, yengil
+ * funksiya sifatida ajratildi.
+ */
+export async function lookupContactPages(query: string): Promise<ResearchSource[]> {
+  const cleanQuery = query.trim();
+  if (cleanQuery.length < 3) return [];
+
+  let results: SearchResult[];
+  try {
+    results = await runDuckDuckGoSearch(cleanQuery, CONTACT_LOOKUP_MAX_RESULTS);
+  } catch {
+    return [];
+  }
+
+  const pages = await Promise.all(results.map(async (result) => ({
+    result,
+    page: await fetchPublicPage(result.url),
+  })));
+
+  return pages
+    .filter((item): item is { result: SearchResult; page: NonNullable<typeof item.page> } => item.page !== null)
+    .map(({ result, page }) => ({
+      title: page.title || result.title,
+      url: page.url,
+      content: page.content,
+    }));
 }
 
 export const researchInternals = { isPublicHost, safeUrl, pageText, searchResults, mergeUnique, isBlockedHtml };
