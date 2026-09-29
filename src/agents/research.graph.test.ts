@@ -185,9 +185,9 @@ test('research graph persists only candidates with valid source citations', asyn
   assert.match(result.state.report, /Profil: Aziz Karimov — buyurtmachi/);
   assert.match(result.state.report, /researched/);
   assert.match(result.state.report, /Manba raqami noto'g'ri/);
-  // Har sayt uchun aniq "necha natija / bloklandi / o'tkazib yuborildi" ko'rinishi
-  // — operator qidiruv chindan qaysi saytlarga borganini shu yerdan tekshiradi.
-  assert.match(result.state.report, /UzITHub: 2 ta natija/);
-  assert.match(result.state.report, /Dowork: DuckDuckGo vaqtincha bloklandi/);
-  assert.match(result.state.report, /GigLancer: oldingi bloklanish tufayli so'ralmadi/);
+  // Bitta ixcham qatorda har sayt uchun "soni / bloklandi / o'tkazib yuborildi"
+  // ko'rinishi — operator qidiruv chindan qaysi saytlarga borganini shu yerdan tekshiradi.
+  assert.match(result.state.report, /UzITHub: 2/);
+  assert.match(result.state.report, /Dowork: bloklandi/);
+  assert.match(result.state.report, /GigLancer: o'tkazib yuborildi/);
 });

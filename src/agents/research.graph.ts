@@ -162,66 +162,49 @@ const SITE_LABELS: Record<string, string> = {
   'freelance.habr.com': 'Habr Freelance',
 };
 
+function siteCoverageLine(state: ResearchState): string | null {
+  if (!state.siteStats.length) return null;
+  const parts = state.siteStats.map((stat) => {
+    const label = SITE_LABELS[stat.site] ?? stat.site;
+    if (stat.skipped) return `${label}: o'tkazib yuborildi`;
+    if (stat.blocked) return `${label}: bloklandi`;
+    return `${label}: ${stat.resultCount}`;
+  });
+  return parts.join(' · ');
+}
+
 function makeReport(state: ResearchState): string {
-  const lines = [`Ov mavzusi: ${state.question}`, ''];
+  const lines = [`📋 Ov mavzusi: ${state.question}`, ''];
 
   if (!state.persisted.length) {
-    lines.push('Nomzod topilmadi yoki hech biri saqlanmadi.');
+    lines.push('❌ Bu safar mos nomzod topilmadi.', '');
   } else {
-    // Bir xil manba bir necha nomzodda takrorlansa ham, har biri BITTA
-    // raqamga ega bo'lsin — hisobot to'liq URL bilan to'lib ketmasin.
-    const refByUrl = new Map<string, number>();
-    const refOf = (url: string): number => {
-      const existing = refByUrl.get(url);
-      if (existing) return existing;
-      const next = refByUrl.size + 1;
-      refByUrl.set(url, next);
-      return next;
-    };
-
-    lines.push('Topilgan va Sales navbatiga qo\'yilgan nomzodlar:', '');
+    lines.push(`✅ ${state.persisted.length} ta nomzod topildi va Sales navbatiga qo'yildi:`, '');
     state.persisted.forEach((p, index) => {
-      lines.push(`${index + 1}. ${p.company}${p.isNew ? '' : ' (mavjud lead yangilandi)'}`);
-      if (p.person) lines.push(`   Profil: ${p.person}${p.role ? ` — ${p.role}` : ''}`);
-      lines.push(`   Og'riq: ${p.painClaim}`);
-      if (p.phone) lines.push(`   Telefon: ${p.phone}`);
-      lines.push(`   Manba: [M${refOf(p.sourceUrl)}]`);
+      lines.push(`${index + 1}. 🏢 ${p.company}${p.isNew ? '' : ' (mavjud lead yangilandi)'}`);
+      if (p.person) lines.push(`   👤 Profil: ${p.person}${p.role ? ` — ${p.role}` : ''}`);
+      lines.push(`   🎯 Og'riq: ${p.painClaim}`);
+      if (p.phone) lines.push(`   📞 Telefon: ${p.phone}`);
+      lines.push(`   🔗 Manba: ${p.sourceUrl}`);
       lines.push('');
     });
-
-    lines.push('Manbalar:');
-    for (const [url, ref] of refByUrl) {
-      lines.push(`[M${ref}] ${url}`);
-    }
   }
 
   if (state.skipped.length) {
-    lines.push('', 'O\'tkazib yuborilgan nomzodlar:', ...state.skipped.map((s, i) => `${i + 1}. ${s}`));
+    lines.push('📌 O\'tkazib yuborilgan nomzodlar:', ...state.skipped.map((s, i) => `${i + 1}. ${s}`), '');
   }
 
   if (state.limitations.length) {
-    lines.push('', 'Cheklovlar:', ...state.limitations.map((item) => `- ${item}`));
+    lines.push('ℹ️ Izohlar:', ...state.limitations.map((item) => `- ${item}`), '');
   }
 
-  if (state.siteStats.length) {
-    lines.push('', 'Qidirilgan manbalar (isbot):');
-    for (const stat of state.siteStats) {
-      const label = SITE_LABELS[stat.site] ?? stat.site;
-      const status = stat.skipped
-        ? 'oldingi bloklanish tufayli so\'ralmadi'
-        : stat.blocked
-          ? 'DuckDuckGo vaqtincha bloklandi'
-          : `${stat.resultCount} ta natija`;
-      lines.push(`- ${label}: ${status}`);
-    }
+  const coverage = siteCoverageLine(state);
+  if (coverage) {
+    lines.push(`🔍 Qidirilgan manbalar (${state.sources.length} ta sahifa ko'rib chiqildi): ${coverage}`, '');
   }
 
-  lines.push(
-    '',
-    `Holat: ${state.persisted.length} ta lead "researched" holatiga o'tkazildi — Sales navbatida kutmoqda.`,
-    'Usul: DuckDuckGo qidiruvining dastlabki natijalari olindi; ochiq sahifalar o\'qildi. Bu to\'liq bozor auditi emas.',
-  );
-  return lines.join('\n');
+  lines.push(`📊 Holat: ${state.persisted.length} ta lead "researched" holatiga o'tkazildi — Sales navbatida kutmoqda.`);
+  return lines.join('\n').trimEnd();
 }
 
 export function createResearchGraph(
