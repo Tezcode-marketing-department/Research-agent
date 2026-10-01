@@ -47,7 +47,7 @@ export class ClaudeCliLlm implements LlmFactory {
       const startedAt = Date.now();
       const fullPrompt = opts?.system ? `${opts.system}\n\n---\n\n${prompt}` : prompt;
       try {
-        const out = await this.run(fullPrompt, opts?.model);
+        const out = await this.run(fullPrompt, opts?.model, opts?.timeoutMs);
         if (out.is_error) throw new Error(out.result ?? 'claude CLI xatosi');
         const usage = {
           tokensIn: out.usage?.input_tokens ?? 0,
@@ -120,7 +120,7 @@ export class ClaudeCliLlm implements LlmFactory {
    * spawn argumentlari ~32K belgi bilan chegaralangan (`ENAMETOOLONG`),
    * manba matnlari bilan promptlar buni osongina oshib ketadi.
    */
-  private run(prompt: string, model?: string): Promise<CliResult> {
+  private run(prompt: string, model?: string, timeoutMs?: number): Promise<CliResult> {
     const args = [
       '-p',
       '--output-format',
@@ -140,7 +140,7 @@ export class ClaudeCliLlm implements LlmFactory {
       const timer = setTimeout(() => {
         child.kill('SIGKILL');
         reject(new Error('claude CLI vaqt chegarasidan oshdi'));
-      }, DEFAULT_TIMEOUT_MS);
+      }, timeoutMs ?? DEFAULT_TIMEOUT_MS);
 
       child.stdin.on('error', () => {}); // jarayon erta chiqsa EPIPE — close handlerda ko'rinadi
       child.stdin.write(prompt);

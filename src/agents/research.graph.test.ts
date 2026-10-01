@@ -48,6 +48,21 @@ test('target freelance/job sites list is complete and has no accidental duplicat
   assert.equal(new Set(TARGET_SITES).size, TARGET_SITES.length);
 });
 
+test('Uzbekistan geo filter drops foreign country domains but keeps .uz and global platforms', () => {
+  // Chet el milliy domenlari — chetlab o'tiladi.
+  assert.equal(researchInternals.isUzbekRelevantUrl('https://restaurant.de/menu'), false);
+  assert.equal(researchInternals.isUzbekRelevantUrl('https://agency.co.uk/about'), false);
+  assert.equal(researchInternals.isUzbekRelevantUrl('https://biznes.ru/news'), false);
+  assert.equal(researchInternals.isUzbekRelevantUrl('https://klinikalar.kz/'), false);
+  // .uz, xalqaro platformalar va TARGET_SITE'lar saqlanadi.
+  assert.equal(researchInternals.isUzbekRelevantUrl('https://example.uz/'), true);
+  assert.equal(researchInternals.isUzbekRelevantUrl('https://www.linkedin.com/in/aliyev'), true);
+  assert.equal(researchInternals.isUzbekRelevantUrl('https://t.me/uzbiznes'), true);
+  assert.equal(researchInternals.isUzbekRelevantUrl('https://uz.wikipedia.org/wiki/Toshkent'), true);
+  assert.equal(researchInternals.isUzbekRelevantUrl('https://kwork.ru/user/1'), true);
+  assert.equal(researchInternals.isUzbekRelevantUrl('https://example.com/'), true);
+});
+
 test('search result parser respects a custom max-results limit', () => {
   const html = ['a', 'b', 'c'].map((id) =>
     `<a class="result__a" href="https://example.com/${id}">Result ${id}</a>`,
@@ -206,9 +221,12 @@ test('research graph expands the operator question into search-friendly queries 
   );
 
   assert.equal(result.status, 'DONE');
-  assert.deepEqual(result.state.queries, expandedQueries);
-  assert.deepEqual(receivedQueries, expandedQueries);
-  assert.match(result.state.report, /Qidiruv iboralari: klinika egasi Toshkent \| tibbiyot markazi rahbari/);
+  // Geo-to'siq: joy nomi bo'lmagan iboralarga "O'zbekiston" qo'shiladi —
+  // qidiruv doim mamlakat chegarasida qoladi.
+  const expectedQueries = expandedQueries.map((query) => `${query} O'zbekiston`);
+  assert.deepEqual(result.state.queries, expectedQueries);
+  assert.deepEqual(receivedQueries, expectedQueries);
+  assert.match(result.state.report, /Qidiruv iboralari: klinika egasi Toshkent O'zbekiston \| tibbiyot markazi rahbari O'zbekiston/);
 });
 
 test('research graph shows a coverage breakdown instead of a bare error when every search query fails', async () => {
@@ -288,8 +306,8 @@ test('research graph falls back to the raw question if query expansion fails', a
   );
 
   assert.equal(result.status, 'DONE');
-  assert.deepEqual(result.state.queries, ["IT kerak bo'lgan bizneslar"]);
-  assert.deepEqual(receivedQueries, ["IT kerak bo'lgan bizneslar"]);
+  assert.deepEqual(result.state.queries, ["IT kerak bo'lgan bizneslar O'zbekiston"]);
+  assert.deepEqual(receivedQueries, ["IT kerak bo'lgan bizneslar O'zbekiston"]);
 });
 
 test('research graph reports near-misses beyond the enrichment cap instead of silently dropping them', async () => {
@@ -333,8 +351,11 @@ test('research graph reports near-misses beyond the enrichment cap instead of si
   );
 
   assert.equal(result.status, 'DONE');
-  assert.match(result.state.report, /Bog'lanish topilmadi, o'tkazib yuborildi: A Klinika, B Klinika, C Klinika/);
-  assert.match(result.state.report, /Bog'lanish uchun tekshirilmadi \(chegaradan oshdi\): D Klinika/);
+  // Aloqasi topilmagan nomzodlar ham hisobotdan yo'qolmaydi — saqlanib,
+  // ogohlantirish sifatida ko'rsatiladi.
+  assert.equal(result.state.persisted.length, 4);
+  assert.match(result.state.report, /Bog'lanish manbada topilmadi \(qo'lda aniqlash kerak\): A Klinika, B Klinika, C Klinika, D Klinika/);
+  assert.match(result.state.report, /Aloqa: manbada topilmadi/);
 });
 
 test('research graph stores an enrichment-found contactUrl as the lead\'s site, not just inside the note text', async () => {
@@ -420,7 +441,7 @@ test('research graph persists a candidate without pain when the operator did not
 
   const runner = new GraphRunner(new MemoryCheckpointer(), llmFactory);
   const result = await runner.start(
-    createResearchGraph(async () => ({ sources, stats: [] }), leadStore),
+    createResearchGraph(async () => ({ sources, stats: [] }), leadStore, async () => []),
     researchInitialState("muammosi bo'lmasa ham klinikaga ega biznesmenlar"),
   );
 
@@ -489,7 +510,7 @@ test('research graph promotes a near-miss candidate when enrichment finds contac
   assert.match(result.state.report, /Najot Klinikasi/);
 });
 
-test('research graph leaves a near-miss unpersisted when enrichment finds no contact info', async () => {
+test('research graph persists a near-miss lead even when enrichment finds no contact info', async () => {
   const sources: ResearchSource[] = [{
     title: 'Klinika egasi haqida',
     url: 'https://example.com/klinika-egasi',
@@ -535,8 +556,10 @@ test('research graph leaves a near-miss unpersisted when enrichment finds no con
   );
 
   assert.equal(result.status, 'DONE');
-  assert.equal(result.state.persisted.length, 0);
-  assert.match(result.state.report, /Bog'lanish topilmadi.*Sirli Klinika/);
+  assert.equal(result.state.persisted.length, 1);
+  assert.equal(result.state.persisted[0]?.company, 'Sirli Klinika');
+  assert.match(result.state.report, /Bog'lanish manbada topilmadi \(qo'lda aniqlash kerak\): Sirli Klinika/);
+  assert.match(result.state.report, /Aloqa: manbada topilmadi/);
 });
 
 test('research graph persists only candidates with valid source citations', async () => {
@@ -590,7 +613,7 @@ test('research graph persists only candidates with valid source citations', asyn
 
   const runner = new GraphRunner(new MemoryCheckpointer(), llmFactory);
   const result = await runner.start(
-    createResearchGraph(async () => ({ sources, stats }), leadStore),
+    createResearchGraph(async () => ({ sources, stats }), leadStore, async () => []),
     researchInitialState('IT kerak bo\'lgan bizneslar'),
   );
 
@@ -609,4 +632,128 @@ test('research graph persists only candidates with valid source citations', asyn
   assert.match(result.state.report, /UzITHub: 2/);
   assert.match(result.state.report, /Dowork: bloklandi/);
   assert.match(result.state.report, /GigLancer: o'tkazib yuborildi/);
+});
+
+test('research graph deep-dives top candidates and surfaces LinkedIn, details and summary in the report', async () => {
+  const sources: ResearchSource[] = [{
+    title: 'Klinika haqida',
+    url: 'https://example.com/klinika',
+    content: 'A sufficiently long source excerpt about a clinic with a listed phone number.',
+  }];
+  const linkedinUrl = 'https://www.linkedin.com/company/shifo-klinikasi';
+
+  const llmFactory: LlmFactory = {
+    forStep: () => ({
+      llm: {
+        text: async () => '',
+        json: async <T>(schema: ZodType<T>, _prompt: string, opts?: { purpose?: string }): Promise<T> => {
+          if (opts?.purpose === 'research-query-expand') return schema.parse({ queries: ['klinika egasi'] }) as T;
+          if (opts?.purpose === 'research-deepdive') {
+            return schema.parse({
+              dossiers: [{
+                company: 'Shifo Klinikasi',
+                person: 'Dilnoza Karimova',
+                role: 'Bosh shifokor',
+                contactUrl: 'https://shifo-klinikasi.uz',
+                linkedin: linkedinUrl,
+                details: ['2012-yilda tashkil topgan', '12 nafar shifokor bilan ishlaydi'],
+                summary: "Toshkentda joylashgan, o'sayotgan klinika.",
+              }],
+            }) as T;
+          }
+          return schema.parse({
+            candidates: [{
+              company: 'Shifo Klinikasi',
+              phone: '+998901112233',
+              fact: { kind: 'site', text: 'Klinika sayti.', sourceId: 1 },
+            }],
+            nearMisses: [],
+            limitations: [],
+          }) as T;
+        },
+      },
+      usage: () => ({ ...ZERO_USAGE }),
+    }),
+  };
+
+  let savedNote = '';
+  const leadStore: ResearchLeadStore = {
+    ensureProject: async () => ({ id: 'proj-1' }),
+    persistCandidate: async (_p, _a, candidate): Promise<PersistedLead> => {
+      savedNote = candidate.note;
+      return { leadId: 'lead-1', company: candidate.company, isNew: true };
+    },
+  };
+
+  let deepDiveQuery = '';
+  const runner = new GraphRunner(new MemoryCheckpointer(), llmFactory);
+  const result = await runner.start(
+    createResearchGraph(async () => ({ sources, stats: [] }), leadStore, async (query) => {
+      deepDiveQuery = query;
+      return [{ title: 'LinkedIn sahifa', url: linkedinUrl, content: 'Klinika profili.' }];
+    }),
+    researchInitialState('klinikaga ega biznesmenlar'),
+  );
+
+  assert.equal(result.status, 'DONE');
+  // Boyituvchi bosqich kompaniya bo'yicha alohida qidiruv boshlaydi.
+  assert.match(deepDiveQuery, /Shifo Klinikasi/);
+  assert.equal(result.state.persisted[0]?.linkedin, linkedinUrl);
+  // Deep-dive katalogda yo'q bo'lgan rahbar ismi va rasmiy manzilni ham qo'shadi.
+  assert.equal(result.state.persisted[0]?.person, 'Dilnoza Karimova');
+  assert.equal(result.state.persisted[0]?.contactUrl, 'https://shifo-klinikasi.uz');
+  assert.ok(result.state.report.includes(`LinkedIn: ${linkedinUrl}`));
+  assert.ok(result.state.report.includes('Sayt/profil: https://shifo-klinikasi.uz'));
+  assert.ok(result.state.report.includes('2012-yilda tashkil topgan'));
+  assert.ok(result.state.report.includes("Toshkentda joylashgan, o'sayotgan klinika."));
+  // Lead iziga ham boyituvchi ma'lumot tushadi — Sales o'zi ko'radi.
+  assert.ok(savedNote.includes(`LinkedIn: ${linkedinUrl}`));
+  assert.ok(savedNote.includes('Tafsilotlar:'));
+});
+
+test('research graph reports a readable limitation instead of failing when the hunt LLM call times out', async () => {
+  const sources: ResearchSource[] = [{
+    title: 'Klinikalar ro\'yxati',
+    url: 'https://example.com/klinikalar',
+    content: 'A sufficiently long source excerpt listing several clinics.',
+  }];
+
+  let huntTimeoutMs: number | undefined;
+  const llmFactory: LlmFactory = {
+    forStep: () => ({
+      llm: {
+        text: async () => '',
+        json: async <T>(schema: ZodType<T>, _prompt: string, opts?: { purpose?: string; timeoutMs?: number }): Promise<T> => {
+          if (opts?.purpose === 'research-query-expand') return schema.parse({ queries: ['klinika egasi'] }) as T;
+          if (opts?.purpose === 'research-hunt') {
+            huntTimeoutMs = opts.timeoutMs;
+            throw new Error('claude CLI vaqt chegarasidan oshdi');
+          }
+          return schema.parse({ candidates: [], nearMisses: [], limitations: [] }) as T;
+        },
+      },
+      usage: () => ({ ...ZERO_USAGE }),
+    }),
+  };
+
+  const leadStore: ResearchLeadStore = {
+    ensureProject: async () => ({ id: 'proj-1' }),
+    persistCandidate: async (_p, _a, candidate): Promise<PersistedLead> => ({
+      leadId: 'lead-1', company: candidate.company, isNew: true,
+    }),
+  };
+
+  const runner = new GraphRunner(new MemoryCheckpointer(), llmFactory);
+  const result = await runner.start(
+    createResearchGraph(async () => ({ sources, stats: [] }), leadStore, async () => []),
+    researchInitialState('klinikasi bor 10 ta rahbar'),
+  );
+
+  // Og'ir ov chaqiruviga 10 daqiqalik timeout beriladi va LLM yiqilsa ham
+  // run "FAILED" emas — sababli hisobot qaytadi.
+  assert.equal(huntTimeoutMs, 600_000);
+  assert.equal(result.status, 'DONE');
+  assert.match(result.state.report, /Ov bosqichi LLM javob bermadi/);
+  assert.match(result.state.report, /vaqt chegarasidan oshdi/);
+  assert.match(result.state.report, /Bu safar mos nomzod topilmadi/);
 });

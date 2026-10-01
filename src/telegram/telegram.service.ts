@@ -9,6 +9,23 @@ import { ConversationService } from './conversation.service';
 /** Postgres advisory lock kaliti — ikkinchi nusxa polling boshlamasin. */
 const LOCK_KEY = 811_223_344;
 
+/** Telegram xabar chegarasi 4096 belgi — boy hisobot qator bo'yicha bo'laklanadi. */
+const TG_MESSAGE_LIMIT = 4000;
+
+function splitMessage(text: string): string[] {
+  if (!text) return [];
+  const chunks: string[] = [];
+  let rest = text;
+  while (rest.length > TG_MESSAGE_LIMIT) {
+    const newline = rest.lastIndexOf('\n', TG_MESSAGE_LIMIT);
+    const cut = newline > TG_MESSAGE_LIMIT / 2 ? newline : TG_MESSAGE_LIMIT;
+    chunks.push(rest.slice(0, cut));
+    rest = rest.slice(cut).replace(/^\n+/, '');
+  }
+  if (rest) chunks.push(rest);
+  return chunks;
+}
+
 @Injectable()
 export class TelegramService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(TelegramService.name);
@@ -102,7 +119,7 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
       }
       await ctx.replyWithChatAction('typing');
       const reply = await this.conversation.startTask(def.key, ctx.chat.id, text);
-      await ctx.reply(reply.text);
+      for (const chunk of splitMessage(reply.text)) await ctx.reply(chunk);
     });
 
     bot.on('message:text', async (ctx) => {
@@ -116,18 +133,19 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
         // Avval: kutayotgan vazifa bormi? Bo'lsa — javob o'shanga.
         const pending = await this.conversation.handleMessage(def.key, ctx.chat.id, text);
         if (pending) {
-          await ctx.reply(pending.text);
+          for (const chunk of splitMessage(pending.text)) await ctx.reply(chunk);
           return;
         }
         // Kutayotgan ish yo'q. Ba'zi agentlar uchun (masalan Research) oddiy
         // matn ham /vazifa kabi yangi ish boshlaydi — buyruqni eslab yurish shart emas.
         if (def.autoStartFromText) {
           const reply = await this.conversation.startTask(def.key, ctx.chat.id, text);
-          await ctx.reply(reply.text);
+          for (const chunk of splitMessage(reply.text)) await ctx.reply(chunk);
           return;
         }
         // Yo'q — oddiy suhbat.
-        await ctx.reply(await this.chat.reply(def.key, ctx.chat.id, text));
+        const chatReply = await this.chat.reply(def.key, ctx.chat.id, text);
+        for (const chunk of splitMessage(chatReply)) await ctx.reply(chunk);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         this.logger.error(`${def.title}: ${message}`);

@@ -268,11 +268,48 @@ export interface SiteSearchStat {
   blocked: boolean;
   /** Oldingi so'rov bloklangani uchun bu sayt umuman so'ralmadi. */
   skipped: boolean;
+  /** O'zbekistonga tegishli emas deb topilib tashlangan natijalar (faqat umumiy qidiruv). */
+  filteredOut?: number;
 }
 
 export interface SearchLookupResult {
   results: SearchResult[];
   stats: SiteSearchStat[];
+}
+
+/**
+ * O'zbekistonga tegishli emas bo'lishi ehtimoli yuqori milliy domenlar
+ * (.de, .co.uk, .ru, .kz ...). Faqat shu ro'yxatdagi chekkalari tekshiriladi —
+ * xalqaro platformalar (.com/.org/.uz, linkedin, instagram, t.me) saqlanadi,
+ * chunki o'zbek bizneslari ko'p shu yerda turadi.
+ */
+const FOREIGN_CCTLD_SUFFIXES = [
+  // Yevropa va sobiq ittifoq
+  '.uk', '.co.uk', '.org.uk', '.de', '.fr', '.it', '.es', '.nl', '.se', '.no', '.fi',
+  '.pl', '.at', '.be', '.dk', '.cz', '.sk', '.hu', '.ro', '.gr', '.pt', '.ie', '.ch',
+  '.ru', '.ua', '.by',
+  // Amerika va Osiya
+  '.us', '.ca', '.br', '.com.br', '.mx', '.com.mx', '.in', '.co.in', '.jp', '.co.jp',
+  '.cn', '.com.cn', '.kr', '.co.kr', '.tw', '.com.tw', '.hk', '.com.hk',
+  '.sg', '.com.sg', '.my', '.th', '.vn', '.ph', '.id',
+  // Yaqin va O'rta Sharq
+  '.il', '.ae', '.sa', '.tr', '.com.tr', '.pk',
+  // Markaziy Osiyo — o'zbek bo'lmagan domenlar
+  '.kz', '.kg', '.az', '.ge', '.am', '.tj', '.tm',
+];
+
+/** O'zbekistonga tegishli deb hisoblangan (yoki TARGET_SITE) manba URL'i. */
+export function isUzbekRelevantUrl(rawUrl: string): boolean {
+  let hostname: string;
+  try {
+    hostname = new URL(rawUrl).hostname.toLowerCase().replace(/^www\./, '');
+  } catch {
+    return false;
+  }
+  // Frilanser platformalari ataylab so'raladi (kwork.ru, habr) — filtr tegmaydi.
+  if (TARGET_SITES.some((site) => hostname === site || hostname.endsWith(`.${site}`))) return true;
+  if (hostname.endsWith('.uz')) return true;
+  return !FOREIGN_CCTLD_SUFFIXES.some((suffix) => hostname.endsWith(suffix));
 }
 
 /**
@@ -302,8 +339,18 @@ async function collectSearchResults(queries: string[]): Promise<SearchLookupResu
     }
     try {
       const found = await runDuckDuckGoSearch(q, MAX_RESULTS);
-      generalResults.push(found);
-      stats.push({ site: label, resultCount: found.length, blocked: false, skipped: false });
+      // Chet el milliy domenlaridagi natijalar promptga kirmaydi —
+      // operatorga faqat O'zbekiston bo'yicha nomzod kerak.
+      const kept = found.filter((result) => isUzbekRelevantUrl(result.url));
+      const filteredOut = found.length - kept.length;
+      generalResults.push(kept);
+      stats.push({
+        site: label,
+        resultCount: kept.length,
+        blocked: false,
+        skipped: false,
+        ...(filteredOut ? { filteredOut } : {}),
+      });
     } catch (err) {
       generalResults.push([]);
       const blocked = err instanceof DuckDuckGoBlockedError;
@@ -394,7 +441,8 @@ export async function lookupContactPages(query: string): Promise<ResearchSource[
 
   let results: SearchResult[];
   try {
-    results = await runDuckDuckGoSearch(cleanQuery, CONTACT_LOOKUP_MAX_RESULTS);
+    results = (await runDuckDuckGoSearch(cleanQuery, CONTACT_LOOKUP_MAX_RESULTS))
+      .filter((result) => isUzbekRelevantUrl(result.url));
   } catch {
     return [];
   }
@@ -413,4 +461,4 @@ export async function lookupContactPages(query: string): Promise<ResearchSource[
     }));
 }
 
-export const researchInternals = { isPublicHost, safeUrl, pageText, searchResults, mergeUnique, isBlockedHtml };
+export const researchInternals = { isPublicHost, safeUrl, pageText, searchResults, mergeUnique, isBlockedHtml, isUzbekRelevantUrl };

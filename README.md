@@ -34,13 +34,19 @@ pnpm db:migrate
 
 Research botida `/vazifa <ov mavzusi>` yuborilganda (masalan: "IT/AI kerak bo'lgan restoranlar Toshkentda") agent DuckDuckGo'dan dastlabki natijalarni qidiradi, o'n ikkitagacha ochiq sahifani o'qiydi va LLM orqali konkret biznes nomzodlarini ajratadi. Har nomzod uchun manba bilan tasdiqlangan bitta fakt va bitta og'riq gipotezasi bo'lishi shart — manbasiz nomzod yoki dalilsiz og'riq saqlanmaydi.
 
+Aloqa (telefon/sayt) SHART EMAS: manbada bog'lanish ko'rinmasa ham (kataloglar telefonni yashirsa ham) haqiqiy va mos nomzodlar ro'yxatda ko'rsatiladi — shu holda "⚠️ Aloqa: manbada topilmadi" belgisi chiqadi va keyin deep-dive rasmiy sayt/Instagram/rahbar ismini alohida qidiradi. Nomzod yo'qotilmaydi.
+
+Topilgan eng yaxshi 4 nomzod uchun qo'shimcha boyituvchi qidiruv (deepdive) ham bajariladi: LinkedIn profili, kompaniya tafsilotlari (tashkil etilgan yil, xodimlar soni, yirik loyihalar) va bir gapli xulosa — faqat manbada ko'rgan ma'lumot, o'ylab topilmaydi. Hisobot shaxsiy profil ko'rinishida chiqadi: har nomzod uchun alohida blok (profil, xulosa, tafsilotlar, LinkedIn, og'riq, dalil, manba), keyin "⚠️ Muhim ogohlantirishlar" (moslik risklari) va yakunda keyingi qadam savoli. Uzun hisobot Telegram 4096 belgi chegarasi uchun qator bo'yicha bo'laklab yuboriladi.
+
+Qidiruv faqat O'zbekiston bo'yicha cheklanadi: qidiruv iboralari mamlakat chegarasiga keltiriladi (joy nomi bo'lmasa "O'zbekiston" qo'shiladi), chet el milliy domenlaridagi natijalar (.de, .co.uk, .ru, .kz va boshqalar) filtr qilinadi — frilanser platformalari (kwork.ru va h.k.) bundan mustasno. LLM esa manbada o'zbek aloqasi (.uz domen, +998, "O'zbekiston") ko'rinmagan nomzodni yozmaydi. Chet el natijasi nechta tashlangani hisobotning qidiruv qatorida ko'rsatiladi.
+
 Umumiy qidiruvga qo'shimcha ravishda har bir ov quyidagi frilanser/ish topshiriq platformalarini `site:` operatori bilan alohida qidiradi: UzITHub (uzithub.uz), Dowork (dowork.uz), GigLancer (giglancer.uz), Worklance (worklance.uz), Freelancer Mehnat (freelancer.mehnat.uz), Kwork (kwork.ru), Habr Freelance (freelance.habr.com). Bitta sayt bloklansa yoki bo'sh natija bersa, faqat o'sha sayt o'tkazib yuboriladi. Barcha manbalar bitta ro'yxatga URL bo'yicha takrorsiz birlashtiriladi va LLM promptining hajmini (xarajatni) nazorat qilish uchun umumiy songa chegaralanadi. Bu saytlardan topilgan nomzod uchun topshiriq egasining profili (`person`/`role`) ham hisobotda ko'rsatiladi.
 
 Har nomzod Postgres'ga yoziladi: `tezcode-outbound` loyihasi ostida Lead upsert qilinadi (kompaniya nomi bo'yicha — takror ov qilinsa yangilanadi, xato bermaydi), Fact va Pain qatorlari qo'shiladi, so'ng Lead holati `researched`ga o'tkaziladi va qisqa izoh yoziladi. Bu — Sales agentga uzatish: Sales hozircha `Lead` jadvalidan `status="researched"` bo'yicha so'raydi (Sales'ning o'z graph mantig'i hali yo'q).
 
 Sahifa yuklashda `http(s)` manzillariga ruxsat beriladi; localhost, xususiy IP va ichki redirect manzillari rad etiladi. Web sahifa matni ishonchsiz ma'lumot sifatida LLM'ga uzatiladi. Bitta nomzodni saqlashda xato bo'lsa, faqat o'sha nomzod o'tkazib yuboriladi — butun ov to'xtamaydi.
 
-`pnpm test:research` manba filtri, sahifa matni ajratish va manba raqamini tekshirishni sinaydi.
+`pnpm test:research` manba filtri (O'zbekiston geo filtri bilan), sahifa matni ajratish, manba raqamini, deep-dive boyitish, aloqasiz nomzodlarni saqlash va LLM xosida ham yiqilmaydigan hisobot mantig'ini sinaydi.
 
 ## Arxitektura
 

@@ -60,6 +60,8 @@ export interface LlmOptions {
   maxTokens?: number;
   /** Xarajat hisobotida ko'rinadigan nom. */
   purpose?: string;
+  /** Javob kutish chegarasi (ms) — og'ir chaqiruvlar uchun uzaytiriladi. */
+  timeoutMs?: number;
 }
 
 /** Tugunga beriladigan LLM fasadi — chaqiruvlar runga bog'lab yoziladi. */
