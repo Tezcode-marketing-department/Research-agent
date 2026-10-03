@@ -38,7 +38,7 @@ export async function instagramCheck(account?: string): Promise<string> {
     return `${stdout}\n${stderr}`.trim().slice(-2000) || 'javob bo\'sh';
   } catch (err) {
     const e = err as { stdout?: string; stderr?: string; message?: string };
-    throw new Error(`tekshiruv o'tmadi:\n${(e.stdout ?? '') + (e.stderr ?? e.message ?? '')}`.slice(0, 1500));
+    throw new Error(`tekshiruv o'tmadi:\n${(e.stdout ?? '') + (e.stderr ?? e.message ?? '')}`.slice(0, 1500), { cause: err });
   }
 }
 

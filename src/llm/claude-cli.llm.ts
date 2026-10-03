@@ -104,6 +104,7 @@ export class ClaudeCliLlm implements LlmFactory {
             if (attempt === 2) {
               throw new Error(
                 `JSON sxemaga tushmadi: ${err instanceof Error ? err.message : String(err)}`,
+                { cause: err },
               );
             }
           }

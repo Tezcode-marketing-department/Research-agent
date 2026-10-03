@@ -5,6 +5,8 @@ import { AgentDef, AgentRegistry } from '../agents/agent.registry';
 import { PrismaService } from '../db/prisma.service';
 import { ChatService } from './chat.service';
 import { ConversationService } from './conversation.service';
+import { resolveCeoDecision } from '../sales/ceo-approval';
+import { sendToLead } from '../sales/outreach';
 
 /** Postgres advisory lock kaliti — ikkinchi nusxa polling boshlamasin. */
 const LOCK_KEY = 811_223_344;
@@ -152,6 +154,44 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
         await ctx.reply(`Xato: ${message}`);
       } finally {
         clearInterval(typing);
+      }
+    });
+
+    // CEO'ning Accept/Decline bosishi — ceo_propose_meeting (MCP) yuborgan
+    // tugma shu yerda ushlanadi, chunki faqat shu process bot tokenini
+    // long-polling qiladi. Deterministik: LLM kerak emas, darhol javob.
+    bot.on('callback_query:data', async (ctx) => {
+      const match = /^ceo_(accept|decline):(.+)$/.exec(ctx.callbackQuery.data);
+      if (!match) return;
+      const [, action, threadId] = match;
+      try {
+        const { leadId, leadCompany, alreadyResolved } = await resolveCeoDecision(
+          this.prisma, threadId, action as 'accept' | 'decline',
+        );
+
+        if (alreadyResolved) {
+          // Boshqa CEO allaqachon bosgan — leadga ikkinchi marta xabar yubormaymiz.
+          await ctx.answerCallbackQuery({ text: 'Allaqachon hal qilindi (boshqa CEO bosgan)' });
+          const original = ctx.callbackQuery.message?.text ?? '';
+          await ctx.editMessageText(`${original}\n\n(allaqachon hal qilindi)`).catch(() => undefined);
+          return;
+        }
+
+        await ctx.answerCallbackQuery({ text: action === 'accept' ? 'Qabul qilindi' : 'Rad etildi' });
+        const original = ctx.callbackQuery.message?.text ?? '';
+        await ctx.editMessageText(
+          `${original}\n\n${action === 'accept' ? `✅ QABUL QILINDI` : `❌ RAD ETILDI`}`,
+        ).catch(() => undefined);
+
+        const toLead = action === 'accept'
+          ? "Ajoyib! Uchrashuv tasdiqlandi, tez orada bog'lanamiz."
+          : "Afsuski, bu vaqt band ekan. Sizga qulay bo'lgan boshqa vaqtni ayting.";
+        await sendToLead(this.prisma, leadId, toLead);
+        this.logger.log(`CEO ${action}: ${leadCompany}`);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        this.logger.error(`CEO tugmasi: ${message}`);
+        await ctx.answerCallbackQuery({ text: `Xato: ${message.slice(0, 180)}` }).catch(() => undefined);
       }
     });
 

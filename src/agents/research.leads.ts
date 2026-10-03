@@ -8,7 +8,7 @@
  */
 import { PrismaService } from '../db/prisma.service';
 
-export type FactKind = 'site' | 'vacancy' | 'freelance' | 'instagram' | 'maps' | 'telegram' | 'news' | 'other';
+export type FactKind = 'site' | 'vacancy' | 'freelance' | 'instagram' | 'maps' | 'telegram' | 'news' | 'linkedin' | 'other';
 export type PainConfidence = 'past' | 'orta' | 'yuqori';
 export type LeadSource = 'linkedin' | 'instagram' | 'maps' | 'vacancy' | 'freelance' | 'telegram' | 'manual';
 

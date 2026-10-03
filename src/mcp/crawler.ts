@@ -296,7 +296,7 @@ export function discoverQueries(pages: CrawledPage[], limit = 25): QueryCandidat
 
   for (const s of srcs) {
     // Har segment alohida: "|", nuqta, vergul iboraning chegarasi.
-    for (const seg of s.text.split(/[|•·.!?;:,()\[\]{}"\u2013\u2014\n]+/)) {
+    for (const seg of s.text.split(/[|•·.!?;:,()[\]{}"\u2013\u2014\n]+/)) {
       const words = tokenize(seg);
       for (let n = 2; n <= 4; n += 1) {
         for (let i = 0; i + n <= words.length; i += 1) {

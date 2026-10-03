@@ -1,4 +1,5 @@
 import { isIP } from 'node:net';
+import { googleSearch, linkedinCompanyPage, linkedinProfile } from '../mcp/linkedin';
 
 export interface ResearchSource {
   title: string;
@@ -15,7 +16,15 @@ const MAX_RESULTS = 12;
 const MAX_PAGE_CHARS = 8_000;
 const MAX_REDIRECTS = 4;
 
-/** Har vazifada qidiriladigan frilanser/ish topshiriq platformalari. */
+/**
+ * Har vazifada qidiriladigan maqsadli manbalar (Google `site:` orqali).
+ * `hh.uz` — Hermes Sales agentining haqiqiy tajribasida tasdiqlangan ENG
+ * KUCHLI dalil manbai (vakansiya + maosh = ochiq, tekshirsa bo'ladigan og'riq).
+ * `linkedin.com` — endi ASOSIY qidiruv emas (LinkedIn'ning o'z qidiruvi bepul
+ * akkauntda tez-tez bo'sh natija qaytaradi), lekin shu yerda topilgan
+ * linkedin.com havolalari baribir Chrome orqali o'qiladi (`fetchAnyPage`) —
+ * kim ekanini tasdiqlash/boyitish uchun foydali.
+ */
 export const TARGET_SITES = [
   'uzithub.uz',
   'dowork.uz',
@@ -24,27 +33,13 @@ export const TARGET_SITES = [
   'freelancer.mehnat.uz',
   'kwork.ru',
   'freelance.habr.com',
+  'hh.uz',
+  'linkedin.com',
 ] as const;
 
 const MAX_SITE_RESULTS = 3;
 /** LLM promptiga uzatiladigan manbalar chegarasi — xarajat va vaqtni nazorat qilish uchun. */
 const MAX_TOTAL_SOURCES = 24;
-/** DuckDuckGo'ga ketma-ket so'rov yuborishda uni bloklatib qo'ymaslik uchun tanaffus (+jitter). */
-const SITE_QUERY_DELAY_MS = 1_500;
-const SITE_QUERY_JITTER_MS = 700;
-
-/**
- * DuckDuckGo bot faolligini sezganda HTTP 202 bilan "anomaliya" sahifasini
- * qaytaradi — bu status muvaffaqiyatli hisoblanadi (`response.ok === true`),
- * shuning uchun oddiy HTTP-status tekshiruvi buni ushlamaydi va natija
- * "hech narsa topilmadi" deb noto'g'ri talqin qilinardi. Belgi 2026-09-29da
- * jonli tekshiruvda aniqlandi.
- */
-function isBlockedHtml(html: string): boolean {
-  return /anomaly|unusual traffic|captcha/i.test(html);
-}
-
-class DuckDuckGoBlockedError extends Error {}
 
 function isPublicHost(hostname: string): boolean {
   const host = hostname.toLowerCase().replace(/^\[|\]$/g, '');
@@ -120,33 +115,6 @@ function pageText(html: string): { title: string; content: string } {
       .replace(/<[^>]+>/g, ' '),
   ).replace(/\s+/g, ' ').trim();
   return { title, content: content.slice(0, MAX_PAGE_CHARS) };
-}
-
-function searchResults(html: string, baseUrl: string, maxResults: number = MAX_RESULTS): SearchResult[] {
-  const seen = new Set<string>();
-  const results: SearchResult[] = [];
-  const anchors = /<a\b([^>]*\bclass=["'][^"']*\bresult__a\b[^"']*["'][^>]*)>([\s\S]*?)<\/a>/gi;
-  for (const match of html.matchAll(anchors)) {
-    const href = /\bhref=["']([^"']+)["']/i.exec(match[1])?.[1];
-    if (!href) continue;
-    let url: URL | null;
-    try {
-      url = safeUrl(new URL(decodeHtml(href), baseUrl).toString());
-    } catch {
-      continue;
-    }
-    if (!url) continue;
-    if (url.hostname.endsWith('duckduckgo.com') && url.pathname === '/l/') {
-      const target = url.searchParams.get('uddg');
-      url = target ? safeUrl(target) : null;
-    }
-    if (!url || seen.has(url.toString())) continue;
-    seen.add(url.toString());
-    const title = decodeHtml(match[2].replace(/<[^>]+>/g, ' ')).replace(/\s+/g, ' ').trim();
-    if (title) results.push({ title, url: url.toString() });
-    if (results.length >= maxResults) break;
-  }
-  return results;
 }
 
 /** Bir necha qidiruvdan kelgan natijalarni URL bo'yicha takrorsiz birlashtiradi, umumiy chegaraga qadar. */
@@ -228,47 +196,53 @@ async function readLimitedText(response: Response, maxBytes: number): Promise<st
   return chunks.join('');
 }
 
-async function runDuckDuckGoSearch(query: string, maxResults: number): Promise<SearchResult[]> {
-  const searchUrl = new URL('https://html.duckduckgo.com/html/');
-  searchUrl.searchParams.set('q', query);
-  let searchResponse: Response | undefined;
-  let lastError: unknown;
-  // Tarmoq uzilishi tez-tez vaqtinchalik bo'ladi — bir marta qayta urinish
-  // butun ovni bekor qilishning oldini oladi.
-  for (let attempt = 1; attempt <= 2 && !searchResponse; attempt += 1) {
-    try {
-      searchResponse = await fetch(searchUrl, {
-        headers: { 'user-agent': 'Mozilla/5.0 (compatible; TezcodeResearch/1.0; +https://tezcode.dev)', accept: 'text/html' },
-        signal: AbortSignal.timeout(15_000),
-      });
-    } catch (error) {
-      lastError = error;
-      if (attempt < 2) await new Promise((resolve) => setTimeout(resolve, 1_000));
-    }
+const GOOGLE_API_KEY = process.env.GOOGLE_SEARCH_API_KEY;
+const GOOGLE_CX = process.env.GOOGLE_SEARCH_CX;
+
+/**
+ * Google Custom Search JSON API — captcha yo'q, lekin sozlash (API kalit +
+ * Programmable Search Engine) va kunlik kvota (bepul tarif: 100 so'rov/kun)
+ * kerak. `num` API'da ko'pi bilan 10 bo'ladi.
+ */
+async function googleApiSearch(query: string, maxResults: number): Promise<SearchResult[]> {
+  const url = new URL('https://www.googleapis.com/customsearch/v1');
+  url.searchParams.set('key', GOOGLE_API_KEY!);
+  url.searchParams.set('cx', GOOGLE_CX!);
+  url.searchParams.set('q', query);
+  url.searchParams.set('num', String(Math.min(maxResults, 10)));
+  const response = await fetch(url, { signal: AbortSignal.timeout(15_000) });
+  if (!response.ok) {
+    const body = await response.text().catch(() => '');
+    throw new Error(`Google API HTTP ${response.status}: ${body.slice(0, 200)}`);
   }
-  if (!searchResponse) {
-    const cause = lastError instanceof Error && lastError.cause ? ` (${String((lastError.cause as { code?: string; message?: string }).code ?? lastError.cause)})` : '';
-    const message = lastError instanceof Error ? lastError.message : String(lastError);
-    throw new Error(`Web qidiruvi ishlamadi: ${message}${cause}`);
-  }
-  if (!searchResponse.ok) throw new Error(`Web qidiruvi HTTP ${searchResponse.status} qaytardi.`);
-  const searchHtml = await readLimitedText(searchResponse, 2_000_000);
-  if (isBlockedHtml(searchHtml)) {
-    throw new DuckDuckGoBlockedError('DuckDuckGo so\'rovni vaqtincha cheklamoqda (anomaliya himoyasi) — birozdan keyin qayta urinib ko\'ring.');
-  }
-  return searchResults(searchHtml, searchUrl.toString(), maxResults);
+  const data = (await response.json()) as { items?: { title: string; link: string }[] };
+  return (data.items ?? []).map((item) => ({ title: item.title, url: item.link }));
 }
 
-/** Bitta manbaning (umumiy qidiruv yoki bitta `TARGET_SITES` domeni) qidiruv natijasi — operatorga "chindan qidirdimi" isboti sifatida ko'rsatiladi. */
+/**
+ * GOOGLE_SEARCH_API_KEY/GOOGLE_SEARCH_CX sozlangan bo'lsa haqiqiy API
+ * ishlatiladi (ishonchli, captcha yo'q). Sozlanmagan bo'lsa ochiq Chrome
+ * oynasi orqali qidiradi (zahira — captcha xavfi bor, lekin kalit shart
+ * emas). Ikkalasi ham xato bo'lsa chaqiruvchi bo'sh ro'yxat bilan davom etadi.
+ */
+async function runGoogleSearch(query: string, maxResults: number): Promise<SearchResult[]> {
+  if (GOOGLE_API_KEY && GOOGLE_CX) {
+    return googleApiSearch(query, maxResults);
+  }
+  const hits = await googleSearch(query, maxResults);
+  return hits.map((hit) => ({ title: hit.title, url: hit.url }));
+}
+
+/** Bitta manbaning (Google so'rovi yoki sayt) natijasi — operatorga "chindan qidirdimi" isboti sifatida ko'rsatiladi. */
 export interface SiteSearchStat {
-  /** Domen nomi, yoki umumiy DuckDuckGo qidiruvi uchun 'umumiy'. */
+  /** Manba nomi: 'linkedin', 'google', yoki bitta TARGET_SITES domeni. */
   site: string;
   resultCount: number;
-  /** DuckDuckGo aynan shu so'rovda anomaliya sahifasini qaytardi. */
+  /** Chrome/LinkedIn/Google bu so'rovda xato qaytardi (bloklandi, login kerak, captcha). */
   blocked: boolean;
-  /** Oldingi so'rov bloklangani uchun bu sayt umuman so'ralmadi. */
+  /** Oldingi so'rov bloklangani uchun bu manba umuman so'ralmadi. */
   skipped: boolean;
-  /** O'zbekistonga tegishli emas deb topilib tashlangan natijalar (faqat umumiy qidiruv). */
+  /** O'zbekistonga tegishli emas deb topilib tashlangan natijalar (faqat Google umumiy qidiruvi). */
   filteredOut?: number;
 }
 
@@ -298,7 +272,7 @@ const FOREIGN_CCTLD_SUFFIXES = [
   '.kz', '.kg', '.az', '.ge', '.am', '.tj', '.tm',
 ];
 
-/** O'zbekistonga tegishli deb hisoblangan (yoki TARGET_SITE) manba URL'i. */
+/** O'zbekistonga tegishli deb hisoblangan (yoki TARGET_SITE/LinkedIn) manba URL'i. */
 export function isUzbekRelevantUrl(rawUrl: string): boolean {
   let hostname: string;
   try {
@@ -306,44 +280,48 @@ export function isUzbekRelevantUrl(rawUrl: string): boolean {
   } catch {
     return false;
   }
-  // Frilanser platformalari ataylab so'raladi (kwork.ru, habr) — filtr tegmaydi.
+  // Frilanser platformalari, hh.uz va LinkedIn ataylab so'raladi — filtr tegmaydi.
   if (TARGET_SITES.some((site) => hostname === site || hostname.endsWith(`.${site}`))) return true;
   if (hostname.endsWith('.uz')) return true;
   return !FOREIGN_CCTLD_SUFFIXES.some((suffix) => hostname.endsWith(suffix));
 }
 
+function isLinkedinUrl(rawUrl: string): boolean {
+  try {
+    const host = new URL(rawUrl).hostname.toLowerCase();
+    return host === 'linkedin.com' || host.endsWith('.linkedin.com');
+  } catch {
+    return false;
+  }
+}
+
 /**
- * Har bir kengaytirilgan so'rov ("queries") uchun umumiy DuckDuckGo qidiruvi
- * ishga tushiriladi — operatorning tabiiy tildagi so'rovi o'rniga LLM tuzgan
- * bir necha qidiruv-do'st ibora orqali izlanadi. Faqat BIRINCHI (eng markaziy)
- * so'rov `TARGET_SITES` domenlarini `site:` operatori bilan alohida so'raydi —
- * har so'rov uchun to'liq 7 ta saytni qayta so'rash DuckDuckGo yukini
- * ko'paytirib yuborardi. Bitta so'rov/sayt ishlamasa (bloklangan, bo'sh
- * natija) faqat o'shasi o'tkazib yuboriladi, butun ov to'xtamaydi.
- * DuckDuckGo bloklaganini payqasak, qolgan hamma so'rovlarni (umumiy ham,
- * sayt ham) so'ramasdan o'tkazib yuboramiz — IP allaqachon cheklangan bo'lsa,
- * davom etish faqat bloklanish vaqtini uzaytiradi. Har bir so'rovning natijasi
- * `stats`da qayd etiladi — operator qaysi so'rov/sayt haqiqatan so'ralganini
- * va necha natija qaytarganini keyin hisobotda ko'ra oladi.
+ * Har bir kengaytirilgan so'rov ("queries") uchun Google qidiruvi (API yoki
+ * Chrome zahira) — asosiy manba. Faqat BIRINCHI (eng markaziy) so'rov uchun
+ * qo'shimcha ravishda maqsadli manbalar (`TARGET_SITES`: frilanser
+ * platformalari, hh.uz, linkedin.com) Google `site:` operatori bilan alohida
+ * so'raladi. Bitta manba ishlamasa (bloklangan, bo'sh natija) faqat o'shasi
+ * o'tkazib yuboriladi, butun ov to'xtamaydi.
  */
+/** Chrome-zahira ishlatilganda ketma-ket navigatsiyalar orasida kichik tanaffus — bot izlarini kamaytiradi. API rejimida ham zarari yo'q. */
+const NAV_DELAY_MS = 1_200;
+const NAV_JITTER_MS = 600;
+async function navDelay(): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, NAV_DELAY_MS + Math.random() * NAV_JITTER_MS));
+}
+
 async function collectSearchResults(queries: string[]): Promise<SearchLookupResult> {
   const stats: SiteSearchStat[] = [];
-  const generalResults: SearchResult[][] = [];
-  let blockedSoFar = false;
+  const googleResults: SearchResult[][] = [];
 
   for (const [index, q] of queries.entries()) {
-    const label = queries.length > 1 ? `Umumiy so'rov ${index + 1}` : 'umumiy';
-    if (blockedSoFar) {
-      stats.push({ site: label, resultCount: 0, blocked: false, skipped: true });
-      continue;
-    }
+    const label = queries.length > 1 ? `Google so'rov ${index + 1}` : 'google';
+    if (index > 0) await navDelay();
     try {
-      const found = await runDuckDuckGoSearch(q, MAX_RESULTS);
-      // Chet el milliy domenlaridagi natijalar promptga kirmaydi —
-      // operatorga faqat O'zbekiston bo'yicha nomzod kerak.
+      const found = await runGoogleSearch(q, MAX_RESULTS);
       const kept = found.filter((result) => isUzbekRelevantUrl(result.url));
       const filteredOut = found.length - kept.length;
-      generalResults.push(kept);
+      googleResults.push(kept);
       stats.push({
         site: label,
         resultCount: kept.length,
@@ -352,37 +330,31 @@ async function collectSearchResults(queries: string[]): Promise<SearchLookupResu
         ...(filteredOut ? { filteredOut } : {}),
       });
     } catch (err) {
-      generalResults.push([]);
-      const blocked = err instanceof DuckDuckGoBlockedError;
-      stats.push({ site: label, resultCount: 0, blocked, skipped: false });
-      if (blocked) blockedSoFar = true;
-    }
-    if (index < queries.length - 1) {
-      await new Promise((resolve) => setTimeout(resolve, SITE_QUERY_DELAY_MS + Math.random() * SITE_QUERY_JITTER_MS));
+      googleResults.push([]);
+      stats.push({ site: label, resultCount: 0, blocked: true, skipped: false });
+      void err;
     }
   }
 
   const primaryQuery = queries[0];
   const siteResults: SearchResult[][] = [];
   for (const site of TARGET_SITES) {
-    if (blockedSoFar) {
-      stats.push({ site, resultCount: 0, blocked: false, skipped: true });
-      continue;
-    }
-    await new Promise((resolve) => setTimeout(resolve, SITE_QUERY_DELAY_MS + Math.random() * SITE_QUERY_JITTER_MS));
+    await navDelay();
     try {
-      const found = await runDuckDuckGoSearch(`site:${site} ${primaryQuery}`, MAX_SITE_RESULTS);
+      const found = await runGoogleSearch(`site:${site} ${primaryQuery}`, MAX_SITE_RESULTS);
       siteResults.push(found);
       stats.push({ site, resultCount: found.length, blocked: false, skipped: false });
     } catch (err) {
       siteResults.push([]);
-      const blocked = err instanceof DuckDuckGoBlockedError;
-      stats.push({ site, resultCount: 0, blocked, skipped: false });
-      if (blocked) blockedSoFar = true;
+      stats.push({ site, resultCount: 0, blocked: true, skipped: false });
+      void err;
     }
   }
 
-  return { results: mergeUnique([...generalResults, ...siteResults], MAX_TOTAL_SOURCES), stats };
+  return {
+    results: mergeUnique([...googleResults, ...siteResults], MAX_TOTAL_SOURCES),
+    stats,
+  };
 }
 
 export interface ResearchLookupResult {
@@ -391,16 +363,37 @@ export interface ResearchLookupResult {
 }
 
 /**
- * Barcha so'rovlar (umumiy + saytlar) natija bermaganda ko'tariladi. `stats`ni
- * o'zi bilan olib yuradi — shu sabab chaqiruvchi (research.graph.ts) buni
- * bo'sh natija sifatida qabul qilib, baribir qaysi sayt bloklangani/hech
+ * Barcha so'rovlar (LinkedIn + Google + saytlar) natija bermaganda ko'tariladi.
+ * `stats`ni o'zi bilan olib yuradi — shu sabab chaqiruvchi (research.graph.ts)
+ * buni bo'sh natija sifatida qabul qilib, baribir qaysi manba bloklangani/hech
  * narsa qaytarmaganini hisobotda ko'rsata oladi, "sabab noma'lum" xato
  * o'rniga.
  */
 export class NoSearchResultsError extends Error {
   constructor(public readonly stats: SiteSearchStat[]) {
-    super('Web qidiruvidan ochiq natija olinmadi.');
+    super('Qidiruvdan ochiq natija olinmadi.');
   }
+}
+
+/**
+ * LinkedIn manzilini (profil yoki kompaniya) Chrome orqali, boshqa har qanday
+ * manzilni oddiy HTTP fetch orqali o'qiydi — Chrome faqat login talab
+ * qiladigan sahifalar uchun ishlatiladi, boshqa saytlar uchun tezroq va
+ * akkaunt budjetini tejaydigan yo'l.
+ */
+async function fetchAnyPage(result: SearchResult): Promise<{ url: string; title: string; content: string } | null> {
+  if (isLinkedinUrl(result.url)) {
+    try {
+      const content = /\/in\//.test(result.url)
+        ? await linkedinProfile(result.url)
+        : await linkedinCompanyPage(result.url);
+      if (!content || content.length < 100) return null;
+      return { url: result.url, title: result.title, content: content.slice(0, MAX_PAGE_CHARS) };
+    } catch {
+      return null;
+    }
+  }
+  return fetchPublicPage(result.url);
 }
 
 /** Web'dan manba topadi, sahifalarni oladi va faqat tekshiriladigan matnni qaytaradi. */
@@ -413,7 +406,7 @@ export async function lookupResearchSources(queries: string[]): Promise<Research
 
   const pages = await Promise.all(results.map(async (result) => ({
     result,
-    page: await fetchPublicPage(result.url),
+    page: await fetchAnyPage(result),
   })));
 
   const sources = pages
@@ -431,9 +424,9 @@ const CONTACT_LOOKUP_MAX_RESULTS = 3;
 
 /**
  * Bitta nomzod uchun bog'lanish ma'lumotini alohida qidiradi — to'liq
- * `TARGET_SITES` fanoutisiz, faqat bitta umumiy so'rov. `lookupResearchSources`
- * har chaqiruvda 7 ta qo'shimcha sayt so'ramasin, shu sabab alohida, yengil
- * funksiya sifatida ajratildi.
+ * `TARGET_SITES`/LinkedIn fanoutisiz, faqat bitta Google so'rovi. Yengil
+ * funksiya sifatida ajratilgan — har nomzodda to'liq qidiruv yukini
+ * ko'paytirmaslik uchun.
  */
 export async function lookupContactPages(query: string): Promise<ResearchSource[]> {
   const cleanQuery = query.trim();
@@ -441,7 +434,7 @@ export async function lookupContactPages(query: string): Promise<ResearchSource[
 
   let results: SearchResult[];
   try {
-    results = (await runDuckDuckGoSearch(cleanQuery, CONTACT_LOOKUP_MAX_RESULTS))
+    results = (await runGoogleSearch(cleanQuery, CONTACT_LOOKUP_MAX_RESULTS))
       .filter((result) => isUzbekRelevantUrl(result.url));
   } catch {
     return [];
@@ -449,7 +442,7 @@ export async function lookupContactPages(query: string): Promise<ResearchSource[
 
   const pages = await Promise.all(results.map(async (result) => ({
     result,
-    page: await fetchPublicPage(result.url),
+    page: await fetchAnyPage(result),
   })));
 
   return pages
@@ -461,4 +454,4 @@ export async function lookupContactPages(query: string): Promise<ResearchSource[
     }));
 }
 
-export const researchInternals = { isPublicHost, safeUrl, pageText, searchResults, mergeUnique, isBlockedHtml, isUzbekRelevantUrl };
+export const researchInternals = { isPublicHost, safeUrl, pageText, mergeUnique, isUzbekRelevantUrl };

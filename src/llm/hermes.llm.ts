@@ -40,7 +40,7 @@ export function loadHermesConfig(home: string = HERMES_HOME): HermesModelConfig 
 
 function readEnvFile(path: string): Record<string, string> {
   const out: Record<string, string> = {};
-  let raw = '';
+  let raw: string;
   try {
     raw = readFileSync(path, 'utf8');
   } catch {
@@ -159,6 +159,7 @@ export class HermesLlm implements LlmFactory {
             if (attempt === 2) {
               throw new Error(
                 `JSON sxemaga tushmadi: ${err instanceof Error ? err.message : String(err)}`,
+                { cause: err },
               );
             }
           }

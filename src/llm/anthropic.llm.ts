@@ -38,7 +38,7 @@ export interface LlmDefaults {
 }
 
 export const DEFAULTS: LlmDefaults = {
-  model: 'claude-opus-5',
+  model: 'claude-sonnet-5',
   effort: 'high',
   maxTokens: 16000,
 };

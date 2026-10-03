@@ -1,25 +1,35 @@
 /**
- * LinkedIn — Sardor ochgan Chrome oynasiga ULANADI, o'zi brauzer ochmaydi.
+ * LinkedIn/Google — Playwright o'zi boshqaradigan doimiy profil (persistent
+ * context) orqali ishlaydi. Standing Chrome oynasi SHART EMAS: server shu
+ * modul birinchi marta chaqirilganda profil papkasidan (cookie/sessiya shu
+ * yerda saqlanadi) o'zi ochadi va butun process umri davomida ushlab turadi.
  *
  * Shartlar:
- *  - Oynani Sardor `scripts/chrome-linkedin.sh` bilan ochadi va LinkedIn'ga
- *    o'zi kiradi. Bizda parol ham, cookie ham yo'q.
- *  - Oyna yopilsa — agentning kirishi tugaydi.
- *  - Yuborish funksiyasi YO'Q. Faqat o'qish. Xabarni Sardor o'zi bosadi.
+ *  - Login kerak bo'lsa (hali kirilmagan) — ko'rinadigan oyna avtomatik
+ *    ochiladi, bir marta kiriladi, keyin ko'rinmas rejimga qaytiladi.
+ *  - Shu profil papkasini BOSHQA Chrome jarayoni (masalan qo'lda ochilgan)
+ *    bir vaqtda egallay olmaydi — SingletonLock xatosi beradi.
+ *  - Yuborish funksiyasi YO'Q (type-draft bundan mustasno — u ham
+ *    yubormaydi). Xabarni odam o'zi bosadi.
  */
-import { spawn } from 'node:child_process';
-import { existsSync, mkdirSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { mkdirSync } from 'node:fs';
+import { homedir, platform } from 'node:os';
 import { join } from 'node:path';
-import { chromium, type Browser, type Page } from 'playwright-core';
+import { chromium, type BrowserContext, type Page } from 'playwright-core';
 
-const CDP_PORT = Number(process.env.LINKEDIN_CDP_PORT ?? 9222);
-const CDP_URL = process.env.LINKEDIN_CDP_URL ?? `http://127.0.0.1:${CDP_PORT}`;
-const CHROME_BIN =
-  process.env.CHROME_BIN ?? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
+/** OS'ga qarab Chrome'ning odatiy o'rnatish yo'li — CHROME_BIN env bilan har doim bekor qilish mumkin. */
+function defaultChromeBin(): string {
+  if (platform() === 'win32') return 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
+  if (platform() === 'darwin') return '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
+  return 'google-chrome';
+}
+
+const CHROME_BIN = process.env.CHROME_BIN ?? defaultChromeBin();
 const CHROME_PROFILE =
   process.env.LINKEDIN_PROFILE_DIR ??
-  join(homedir(), 'Desktop', 'Tezcode', 'Tezcode-Agents', '.chrome-linkedin');
+  (platform() === 'win32'
+    ? join(homedir(), '.chrome-linkedin')
+    : join(homedir(), 'Desktop', 'Tezcode', 'Tezcode-Agents', '.chrome-linkedin'));
 /** Soatiga nechta sahifa ochish mumkin — akkaunt xavfini cheklaydi. */
 const HOURLY_LIMIT = Number(process.env.LINKEDIN_HOURLY_LIMIT ?? 25);
 
@@ -36,99 +46,53 @@ function checkRate(): void {
   loads.push(Date.now());
 }
 
-async function cdpAlive(): Promise<boolean> {
-  try {
-    const res = await fetch(`${CDP_URL}/json/version`, {
-      signal: AbortSignal.timeout(1500),
-    });
-    return res.ok;
-  } catch {
-    return false;
-  }
-}
+let context: BrowserContext | null = null;
+/** Hozirgi kontekst ko'rinadigan rejimda ochilganmi — login kerak bo'lganda belgilanadi. */
+let contextHeaded = false;
 
-/** Oxirgi marta qanday rejimda ochganimiz — login kerak bo'lsa qayta ochish uchun. */
-let launchedHeaded = false;
-let launchedPid: number | null = null;
+async function launchContext(headed: boolean): Promise<BrowserContext> {
+  mkdirSync(CHROME_PROFILE, { recursive: true });
+  const ctx = await chromium.launchPersistentContext(CHROME_PROFILE, {
+    executablePath: CHROME_BIN,
+    headless: !headed,
+    args: ['--no-first-run', '--no-default-browser-check'],
+  });
+  contextHeaded = headed;
+  return ctx;
+}
 
 /**
- * Chrome ochiq bo'lmasa — O'ZI ochadi. Sardordan skript so'ramaydi.
- *
- * Sukut bo'yicha KO'RINMAS (headless): oyna chiqmaydi, fokus o'g'irlanmaydi,
- * Sardor ishlayveradi. Faqat LinkedIn'ga kirish kerak bo'lganda ko'rinadigan
- * oyna ochiladi — chunki parolni faqat Sardor yozadi.
+ * Doimiy kontekst — birinchi chaqiruvda o'zi ochiladi (sukut: ko'rinmas,
+ * LINKEDIN_HEADED=1 bo'lsa ko'rinadigan), keyingi har bir qidiruv/sahifa
+ * o'qishda QAYTA ISHLATILADI (har safar ochib-yopish shart emas).
  */
-async function launchChrome(headed: boolean): Promise<void> {
-  if (!existsSync(CHROME_BIN)) throw new Error(`Chrome topilmadi: ${CHROME_BIN}`);
-  mkdirSync(CHROME_PROFILE, { recursive: true });
-  const args = [
-    `--user-data-dir=${CHROME_PROFILE}`,
-    `--remote-debugging-port=${CDP_PORT}`,
-    '--no-first-run',
-    '--no-default-browser-check',
-  ];
-  if (!headed) args.push('--headless=new');
-  args.push('https://www.linkedin.com/feed/');
-
-  const child = spawn(CHROME_BIN, args, { detached: true, stdio: 'ignore' });
-  child.unref();
-  launchedHeaded = headed;
-  launchedPid = child.pid ?? null;
-
-  for (let i = 0; i < 40; i += 1) {
-    await new Promise((r) => setTimeout(r, 500));
-    if (await cdpAlive()) return;
-  }
-  throw new Error('Chrome ochildi, lekin debug porti javob bermadi.');
+async function getContext(): Promise<BrowserContext> {
+  if (context) return context;
+  context = await launchContext(process.env.LINKEDIN_HEADED === '1');
+  return context;
 }
 
-/** Ko'rinmas nusxani yopib, ko'rinadiganini ochadi (login uchun). */
+/** Ko'rinmas konteksni yopib, ko'rinadiganini ochadi (login uchun). */
 async function relaunchHeaded(): Promise<void> {
-  if (launchedPid) {
-    try {
-      process.kill(launchedPid, 'SIGTERM');
-    } catch {
-      /* allaqachon yopilgan */
-    }
-    launchedPid = null;
+  if (context) {
+    await context.close().catch(() => undefined);
+    context = null;
   }
-  for (let i = 0; i < 20 && (await cdpAlive()); i += 1) {
-    await new Promise((r) => setTimeout(r, 300));
-  }
-  await launchChrome(true);
+  context = await launchContext(true);
 }
 
-async function connect(): Promise<Browser> {
-  // Sukut — ko'rinmas. LINKEDIN_HEADED=1 bo'lsa ko'rinadigan oyna.
-  if (!(await cdpAlive())) await launchChrome(process.env.LINKEDIN_HEADED === '1');
-  try {
-    return await chromium.connectOverCDP(CDP_URL, { timeout: 8000 });
-  } catch (err) {
-    throw new Error(
-      `Chrome'ga ulanib bo'lmadi: ${err instanceof Error ? err.message : String(err)}`,
-    );
-  }
-}
-
-/** Ochiq kontekstdan sahifa oladi (yangi brauzer ochmaydi). */
+/** Doimiy konteksdan sahifa oladi (yangi brauzer jarayoni ochmaydi). */
 export async function withPage<T>(fn: (page: Page) => Promise<T>): Promise<T> {
-  const browser = await connect();
-  try {
-    const context = browser.contexts()[0];
-    if (!context) throw new Error('Brauzer konteksti topilmadi — oynani qayta oching.');
-    const page = context.pages().find((p) => !p.isClosed()) ?? (await context.newPage());
-    return await fn(page);
-  } finally {
-    // connectOverCDP: uzilish oynani YOPMAYDI, faqat ulanishni uzadi.
-    await browser.close().catch(() => undefined);
-  }
+  const ctx = await getContext();
+  const page = ctx.pages().find((p) => !p.isClosed()) ?? (await ctx.newPage());
+  return fn(page);
 }
 
 async function ensureLoggedIn(page: Page): Promise<void> {
   const url = page.url();
   if (url.includes('/login') || url.includes('/checkpoint') || url.includes('/uas/login')) {
     // Ko'rinmas rejimda edik — parol yozish uchun ko'rinadigan oyna kerak.
-    if (!launchedHeaded) {
+    if (!contextHeaded) {
       await relaunchHeaded();
       throw new Error(
         'LinkedIn\'ga kirilmagan. Ko\'rinadigan Chrome oynasi ochildi — bir marta kiring. ' +
@@ -207,18 +171,141 @@ export async function linkedinProfile(profileUrl: string): Promise<string> {
   });
 }
 
+export interface CompanyHit {
+  name: string;
+  info: string;
+  companyUrl: string;
+}
+
+/**
+ * LinkedIn kompaniya qidiruvi — Research Agentning asosiy nomzod manbai.
+ * `query`ga joy nomi (masalan "Toshkent" yoki "Uzbekistan") qo'shib yuborish
+ * tavsiya etiladi — LinkedIn'ning o'zida aniq geo-filtr qo'yish uchun UI
+ * navigatsiyasi kerak, shu sabab bu yerda oddiy keyword orqali qilinadi.
+ */
+export async function linkedinCompanySearch(query: string, limit = 10): Promise<CompanyHit[]> {
+  checkRate();
+  return withPage(async (page) => {
+    const url = `https://www.linkedin.com/search/results/companies/?keywords=${encodeURIComponent(query)}`;
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45_000 });
+    await ensureLoggedIn(page);
+    try {
+      await page.waitForSelector('a[href*="/company/"]', { timeout: 20_000 });
+    } catch {
+      throw new Error(
+        'Kompaniya qidiruv natijasi chiqmadi (20 s). Sabab: natija yo\'q, LinkedIn qidiruv ' +
+          'chegarasi (bepul akkaunt oylik limiti) yoki sahifa sekin yuklandi.',
+      );
+    }
+    await page.mouse.wheel(0, 1800);
+    await page.waitForTimeout(1800);
+    await page.mouse.wheel(0, 1800);
+    await page.waitForTimeout(1500);
+
+    const hits = (await page.evaluate(`(() => {
+      const out = [];
+      const seen = new Set();
+      for (const a of Array.from(document.querySelectorAll('a[href*="/company/"]'))) {
+        const href = a.href.split('?')[0];
+        if (!href.includes('/company/') || seen.has(href)) continue;
+        const card = a.closest('li') || (a.parentElement && a.parentElement.parentElement);
+        const text = ((card && card.textContent) || '').replace(/\\s+/g, ' ').trim();
+        const name = (a.textContent || '').replace(/\\s+/g, ' ').trim();
+        if (!name || name.length > 100) continue;
+        seen.add(href);
+        out.push({ name: name, info: text.slice(0, 300), companyUrl: href });
+      }
+      return out;
+    })()`)) as CompanyHit[];
+    return hits.slice(0, limit);
+  });
+}
+
+/** Kompaniya sahifasining "About" matnini o'qiydi — fakt va og'riq chiqarish uchun. */
+export async function linkedinCompanyPage(companyUrl: string): Promise<string> {
+  checkRate();
+  if (!/^https:\/\/([a-z]{2,3}\.)?linkedin\.com\/company\//.test(companyUrl)) {
+    throw new Error('Faqat linkedin.com/company/... havolasi qabul qilinadi.');
+  }
+  return withPage(async (page) => {
+    const aboutUrl = companyUrl.replace(/\/?$/, '/').replace(/\/$/, '') + '/about/';
+    await page.goto(aboutUrl, { waitUntil: 'domcontentloaded', timeout: 45_000 });
+    await ensureLoggedIn(page);
+    await page.waitForSelector('main', { timeout: 20_000 }).catch(() => undefined);
+    await page.waitForTimeout(2500);
+    await page.mouse.wheel(0, 1500);
+    await page.waitForTimeout(1500);
+    const text = (await page.evaluate(`(() => {
+      const main = document.querySelector('main') || document.body;
+      return (main.innerText || '').replace(/\\n{3,}/g, '\\n\\n').trim();
+    })()`)) as string;
+    return text.slice(0, 8000);
+  });
+}
+
+export interface GoogleHit {
+  title: string;
+  url: string;
+}
+
+/**
+ * Google'da qidirish — ochiq Chrome oynasi orqali (DuckDuckGo o'rniga).
+ * Haqiqiy brauzer + odamning shu oynadagi sessiyasi (agar Google'ga kirilgan
+ * bo'lsa) captcha/anomaliya xavfini kamaytiradi.
+ */
+export async function googleSearch(query: string, limit = 10): Promise<GoogleHit[]> {
+  checkRate();
+  return withPage(async (page) => {
+    const url = `https://www.google.com/search?q=${encodeURIComponent(query)}&num=${Math.min(limit * 2, 30)}&hl=uz`;
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30_000 });
+
+    // Rozilik sahifasi (consent.google.com) chiqishi mumkin — "Hammasiga rozi" tugmasini bosamiz.
+    if (page.url().includes('consent.google.com')) {
+      const acceptBtn = page.locator('button:has-text("Accept all"), button:has-text("Hammasiga rozi"), button:has-text("Принять все")').first();
+      if ((await acceptBtn.count()) > 0) {
+        await acceptBtn.click().catch(() => undefined);
+        await page.waitForTimeout(1500);
+      }
+    }
+
+    if (/sorry\/index|captcha/i.test(page.url())) {
+      throw new Error('Google botni aniqladi (captcha) — ochiq oynada bir marta qo\'lda tekshiruvdan o\'ting.');
+    }
+
+    await page.waitForSelector('#search', { timeout: 15_000 }).catch(() => undefined);
+    await page.waitForTimeout(800);
+
+    const hits = (await page.evaluate(`(() => {
+      const out = [];
+      const seen = new Set();
+      const root = document.querySelector('#search') || document.body;
+      for (const a of Array.from(root.querySelectorAll('a[href^="http"]'))) {
+        const href = a.href;
+        if (!href || seen.has(href)) continue;
+        if (href.includes('google.com/') || href.includes('googleusercontent.com')) continue;
+        const h3 = a.querySelector('h3');
+        if (!h3) continue;
+        const title = (h3.textContent || '').replace(/\\s+/g, ' ').trim();
+        if (!title) continue;
+        seen.add(href);
+        out.push({ title, url: href });
+      }
+      return out;
+    })()`)) as GoogleHit[];
+    return hits.slice(0, limit);
+  });
+}
+
 export async function browserStatus(): Promise<string> {
   try {
-    const wasOpen = await cdpAlive();
-    const browser = await connect();
-    const context = browser.contexts()[0];
-    const pages = context ? context.pages().filter((p) => !p.isClosed()) : [];
+    const wasOpen = context !== null;
+    const ctx = await getContext();
+    const pages = ctx.pages().filter((p) => !p.isClosed());
     const urls = pages.map((p) => p.url()).slice(0, 5);
-    await browser.close().catch(() => undefined);
     const hourAgo = Date.now() - 3_600_000;
     const used = loads.filter((t) => t >= hourAgo).length;
     return (
-      `${wasOpen ? 'Oyna ochiq edi' : 'Oynani men ochdim'}. ` +
+      `${wasOpen ? 'Brauzer allaqachon ochiq edi' : 'Brauzerni men ochdim'} (${contextHeaded ? 'ko\'rinadigan' : 'ko\'rinmas'}). ` +
       `Sahifalar: ${urls.join(', ') || 'yo\'q'}\nSoatlik sarf: ${used}/${HOURLY_LIMIT}`
     );
   } catch (err) {
@@ -276,8 +363,8 @@ export async function linkedinTypeDraft(profileUrl: string, text: string): Promi
   checkRate();
   if (text.trim().length < 10) throw new Error('matn juda qisqa');
   if (text.length > 1800) throw new Error('matn juda uzun (1800 belgidan oshmasin)');
-  // Oyna ko'rinmas bo'lsa Sardor tugmani bosa olmaydi — ko'rinadiganga o'tamiz.
-  if (!launchedHeaded) await relaunchHeaded();
+  // Oyna ko'rinmas bo'lsa odam tugmani bosa olmaydi — ko'rinadiganga o'tamiz.
+  if (!contextHeaded) await relaunchHeaded();
 
   return withPage(async (page) => {
     await openMessageBox(page, profileUrl);

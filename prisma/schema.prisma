@@ -252,9 +252,10 @@ model Lead {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  facts  Fact[]
-  pains  Pain[]
-  drafts Draft[]
+  facts       Fact[]
+  pains       Pain[]
+  drafts      Draft[]
+  salesThread SalesThread?
 
   @@unique([projectId, company])
   @@index([projectId, status])
@@ -306,6 +307,96 @@ model Draft {
   updatedAt DateTime @updatedAt
 
   @@index([leadId, status])
+}
+
+/// Sales outreach suhbati — bitta lead bilan Telegram USER akkaunt (MTProto)
+/// orqali ketma-ket yozishma. Bot API bot bilan farqi: bu akkaunt leadga
+/// BIRINCHI bo'lib yoza oladi.
+model SalesThread {
+  id        String  @id @default(cuid())
+  leadId    String  @unique
+  lead      Lead    @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  /// Telegram foydalanuvchi ID'si (raqam yoki @username orqali topilgach saqlanadi).
+  telegramPeerId String?
+  /// Savol-javob almashinuvi soni — 6 tadan oshsa uchrashuvga taklif bosqichiga o'tiladi.
+  exchangeCount  Int      @default(0)
+  /// open (yozishmoqda) | scheduling (vaqt taklif qilindi) | awaiting_ceo (CEO tasdig'i kutilmoqda) | confirmed | declined | closed
+  state          String   @default("open")
+  proposedTime   DateTime?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  messages SalesMessage[]
+}
+
+/// Bitta xabar — kiruvchi (lead yozdi) yoki chiquvchi (biz yozdik).
+model SalesMessage {
+  id        String      @id @default(cuid())
+  threadId  String
+  thread    SalesThread @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  /// in | out
+  direction String
+  text      String
+  /// Telegram'dagi xabar ID'si — reconcile.ts shu bo'yicha "ko'rilganmi"
+  /// tekshiradi (push-event qochirib yuborgan xabarni tiklash uchun).
+  /// Eski qatorlarda null.
+  telegramMsgId Int?
+  /// `direction: "in"` uchun: Hermes javobi TUGAGANDA to'ldiriladi.
+  /// Null qolsa — process yiqilgan/qulagan bo'lsa ham reconcile.ts qayta
+  /// urinadi ("yozib qo'yilgan" va "javob berilgan" ALOHIDA holat,
+  /// 2026-10-03 da aynan shu farq yo'qligi uchun bitta javob yo'qolgan edi).
+  /// `direction: "out"` uchun yaratilishi bilan to'ldiriladi.
+  handledAt DateTime?
+  /// Ishni BOSHLAGANDA (hali tugamay) to'ldiriladi — ikkita chaqiruv bir
+  /// xil xabarni parallel ishlamasligi uchun atomik "claim" belgisi.
+  /// Agar process shu "claim" bilan "handled" orasida yiqilib qolsa (masalan
+  /// kutilmagan restart — 2026-10-03 da aynan shunday bo'lgan), reconcile.ts
+  /// bir necha daqiqadan keyin claim "eskirgan" deb hisoblab qayta uradi.
+  claimedAt DateTime?
+  createdAt DateTime    @default(now())
+
+  @@unique([threadId, telegramMsgId])
+  @@index([threadId, createdAt])
+}
+
+/// Qaror qabul qiluvchi (Sardor, boshqa CEO) — Sales Telegram USER akkaunti
+/// orqali shaxsiy yozishma. `SALES_CEO_CONTACTS` env'dagi "label:phone"
+/// ro'yxatidan birinchi ishlatilganda telefon raqami import qilinib topiladi.
+model CeoContact {
+  id             String   @id @default(cuid())
+  /// env'dagi label, masalan "sardor" | "ceo2"
+  label          String   @unique
+  phone          String
+  /// topilgach saqlanadi; hali topilmagan bo'lsa null
+  telegramPeerId String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  messages CeoMessage[]
+}
+
+/// Bitta xabar — CEO yozdi (in) yoki Sales akkaunt yozdi (out).
+model CeoMessage {
+  id        String     @id @default(cuid())
+  contactId String
+  contact   CeoContact @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  /// in | out
+  direction String
+  text      String
+  /// Telegram'dagi xabar ID'si — reconcile.ts shu bo'yicha "ko'rilganmi"
+  /// tekshiradi. Eski qatorlarda null.
+  telegramMsgId Int?
+  /// `direction: "in"` uchun: Hermes javobi TUGAGANDA to'ldiriladi (null
+  /// qolsa — process yiqilgan bo'lsa ham reconcile.ts qayta urinadi).
+  /// `direction: "out"` uchun yaratilishi bilan to'ldiriladi.
+  handledAt DateTime?
+  /// Ishni BOSHLAGANDA to'ldiriladi — atomik "claim" (SalesMessage'dagi
+  /// bilan bir xil sabab).
+  claimedAt DateTime?
+  createdAt DateTime   @default(now())
+
+  @@unique([contactId, telegramMsgId])
+  @@index([contactId, createdAt])
 }
 
 /// Umumiy bilim: nima ishlagani. Sales yozadi — Content o'qiydi, va aksincha.

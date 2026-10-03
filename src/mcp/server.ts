@@ -19,6 +19,9 @@ import {
   linkedinThread,
   linkedinTypeDraft,
 } from './linkedin.js';
+import { getThreadHistory, resolveLeadPeer, sendToLead } from '../sales/outreach.js';
+import { proposeMeetingToCeo } from '../sales/ceo-approval.js';
+import { ceoInbox, notifyCeos } from '../sales/ceo-contacts.js';
 import { imageGenerate, reelCompress, reelRender } from './media.js';
 import { publicImages, reelKnowledge, specSave } from './reels.js';
 import { rankOf, seoAudit, serpTop } from './seo.js';
@@ -63,6 +66,8 @@ const TOOLSETS: Record<string, string[]> = {
     'fact_add', 'pain_add', 'draft_save', 'draft_status',
     'browser_status', 'linkedin_search', 'linkedin_profile',
     'linkedin_thread', 'linkedin_type_draft',
+    'telegram_resolve_lead', 'telegram_send', 'telegram_thread', 'ceo_propose_meeting',
+    'sales_notify_ceo', 'sales_ceo_inbox',
   ],
   research: [
     ...SHARED,
@@ -335,6 +340,116 @@ reg(
     });
     return ok(`Draft ${status}. Yorliq ML uchun yozildi.`);
   },
+);
+
+// ──────────────────────── Telegram outreach (Sales user akkaunt) ────────────────────────
+// Bot API'dan farqli — bu HAQIQIY Telegram akkaunt, leadga BIRINCHI bo'lib
+// yoza oladi. `pnpm sales:login` bilan bir martalik ulanadi (SALES_TG_SESSION).
+
+reg(
+  'telegram_resolve_lead',
+  {
+    title: 'Leadni Telegram\'da topish',
+    description:
+      'Lead\'ning telefon raqamidan Telegram foydalanuvchisini topadi (kontakt sifatida import qilib) va thread\'ga bog\'laydi. Topilmasa xato qaytaradi — demak kanal Telegram emas, boshqasini (sayt, Instagram) sina.',
+    inputSchema: {
+      leadId: z.string(),
+      phone: z.string().describe('xalqaro formatda, masalan +998901234567'),
+      displayName: z.string().optional(),
+    },
+  },
+  async ({ leadId, phone, displayName }) => {
+    const peerId = await resolveLeadPeer(prisma, leadId, phone, displayName ?? '');
+    return ok(`Topildi va bog'landi (peer: ${peerId}). Endi telegram_send bilan yozishing mumkin.`);
+  },
+);
+
+reg(
+  'telegram_send',
+  {
+    title: 'Leadga Telegram orqali yozish',
+    description:
+      'Shaxsiy Telegram akkauntdan (Sales) leadga to\'g\'ridan-to\'g\'ri xabar yuboradi — bot emas, DRAFT emas, DARHOL YETADI. Avval telegram_resolve_lead bilan topilgan bo\'lishi shart. Suhbat qoidasi: bitta xabar = bitta fikr/savol, uzun matn yubormang.',
+    inputSchema: {
+      leadId: z.string(),
+      text: z.string().max(1000),
+    },
+  },
+  async ({ leadId, text }) => {
+    await sendToLead(prisma, leadId, text);
+    return ok('Yuborildi.');
+  },
+);
+
+reg(
+  'telegram_thread',
+  {
+    title: 'Telegram yozishma tarixi',
+    description:
+      'Shu lead bilan Telegram orqali bo\'lgan butun yozishmani (kim, qachon, nima yozgan) qaytaradi — javob yozishdan oldin albatta o\'qing, exchangeCount 6 dan oshsa uchrashuv taklif qilish vaqti.',
+    inputSchema: { leadId: z.string() },
+  },
+  async ({ leadId }) => {
+    const thread = await getThreadHistory(prisma, leadId);
+    if (!thread) return ok("Hali yozishma yo'q — avval telegram_resolve_lead.");
+    return json({
+      state: thread.state,
+      exchangeCount: thread.exchangeCount,
+      proposedTime: thread.proposedTime,
+      messages: thread.messages.map((m) => ({ direction: m.direction, text: m.text, at: m.createdAt })),
+    });
+  },
+);
+
+reg(
+  'ceo_propose_meeting',
+  {
+    title: "Uchrashuv vaqtini CEO'larga tasdiqqa yuborish",
+    description:
+      "Lead uchrashuv vaqtini qabul qilgach chaqiriladi. Ikkala CEO'ga ham (Telegram, Research bot orqali, `CEO_CHAT_ID` ichidagi har bir chatga) Accept/Decline tugmali xabar boradi — ikkisidan BIRI bossa yetarli. Qabul qilinsa — leadga avtomatik tasdiq xabari ketadi. Rad etilsa — leadga boshqa vaqt so'rab xabar ketadi. Bu DETERMINISTIK — siz javobni kutmaysiz, davom etavering.",
+    inputSchema: {
+      leadId: z.string(),
+      proposedTime: z.string().describe('ISO sana-vaqt, masalan 2026-10-05T15:00:00+05:00'),
+    },
+  },
+  async ({ leadId, proposedTime }) => {
+    const botToken = process.env.TG_BOT_TOKEN_RESEARCH;
+    const ceoChatIds = (process.env.CEO_CHAT_ID ?? '').split(',').map((id) => id.trim()).filter(Boolean);
+    if (!botToken || !ceoChatIds.length) {
+      throw new Error("TG_BOT_TOKEN_RESEARCH yoki CEO_CHAT_ID .env'da yo'q (CEO_CHAT_ID bir yoki bir nechta chat ID, vergul bilan ajratilgan).");
+    }
+    await proposeMeetingToCeo(prisma, leadId, new Date(proposedTime), { botToken, ceoChatIds });
+    return ok("Ikkala CEO'ga ham yuborildi, javobini kutmoqda. Mijozga hali xabar yubormang — kim avval bossa, qarori leadga avtomatik ketadi.");
+  },
+);
+
+reg(
+  'sales_notify_ceo',
+  {
+    title: "CEO'larga xabar yuborish (Sales shaxsiy akkaunti orqali)",
+    description:
+      "Sales Telegram USER akkaunti orqali `SALES_CEO_CONTACTS` ichidagi HAR BIR qaror qabul qiluvchiga (Sardor, boshqa CEO) BIR XIL matnni yuboradi. Bot-tugma ISHLATILMAYDI (shaxsiy akkaunt callback_data biriktira olmaydi) — shuning uchun variant tanlash kerak bo'lsa matnni o'zing A) B) C) kabi harfli ro'yxat qilib yoz, CEO harf bilan javob beradi. Masalan: navbatdagi leadlardan qaysi biriga yozishni so'rash uchun ishlatiladi. Javobni keyin `sales_ceo_inbox` bilan o'qi.",
+    inputSchema: {
+      text: z.string().max(2000),
+    },
+  },
+  async ({ text }) => {
+    const notified = await notifyCeos(prisma, text);
+    return ok(`Yuborildi: ${notified.map((n) => n.label).join(', ')}. Javobni sales_ceo_inbox bilan tekshir.`);
+  },
+);
+
+reg(
+  'sales_ceo_inbox',
+  {
+    title: "CEO'lar bilan so'nggi yozishma",
+    description:
+      "`sales_notify_ceo` bilan yuborilgan savolga (masalan 'qaysi leadga yozay?') CEO'lardan kelgan javobni o'qish uchun. Hamma kontaktlar bo'ylab, vaqt bo'yicha aralash qaytadi — har qatorda kim yozgani (label) va yo'nalishi (in/out) ko'rinadi.",
+    inputSchema: {
+      limit: z.number().int().min(1).max(100).default(20),
+    },
+  },
+  async ({ limit }) => json(await ceoInbox(prisma, limit)),
 );
 
 // ──────────────────────────── umumiy bilim ────────────────────────────

@@ -41,6 +41,7 @@ export async function imageGenerate(prompt: string, name: string): Promise<strin
       `Rasm yasalmadi: ${msg.slice(0, 300)}\n` +
         'Sabab odatda Gemini web sessiyasi: kunlik kvota (~5 rasm) tugagan yoki ' +
         '~/content-bot/.chrome-profile da qayta kirish kerak.',
+      { cause: err },
     );
   }
   if (!existsSync(out)) throw new Error('Skript xatosiz tugadi, lekin fayl yaratilmadi.');
